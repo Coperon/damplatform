@@ -1,0 +1,105 @@
+// Schema migration runner. Applies every .sql file in db/migrations/ that has
+// not been applied yet, in filename order, each inside its own transaction.
+//
+//   node scripts/migrate.mjs           apply pending migrations
+//   node scripts/migrate.mjs --status  list applied / pending, apply nothing
+//
+// Migrations are append-only: never edit a file that has already been applied
+// on any environment — add a new numbered file instead. The runner records a
+// sha256 of each file and refuses to continue if a previously-applied file has
+// changed on disk, which is how a silent schema drift gets caught early.
+
+import fs from 'node:fs';
+import path from 'node:path';
+import crypto from 'node:crypto';
+import { fileURLToPath } from 'node:url';
+import { Pool } from 'pg';
+
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
+const MIGRATIONS_DIR = path.join(__dirname, '..', '..', 'db', 'migrations');
+
+try {
+  process.loadEnvFile(path.join(__dirname, '..', '.env.local'));
+} catch {
+  // No .env.local (e.g. CI or a server) — rely on the real environment.
+}
+
+if (!process.env.DATABASE_URL) {
+  console.error('DATABASE_URL is not set.');
+  process.exit(1);
+}
+
+const statusOnly = process.argv.includes('--status');
+const pool = new Pool({ connectionString: process.env.DATABASE_URL });
+
+const sha256 = (s) => crypto.createHash('sha256').update(s).digest('hex');
+
+async function main() {
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS schema_migrations (
+      filename    text PRIMARY KEY,
+      checksum    text NOT NULL,
+      applied_at  timestamptz NOT NULL DEFAULT now()
+    )
+  `);
+
+  if (!fs.existsSync(MIGRATIONS_DIR)) {
+    console.error(`No migrations directory at ${MIGRATIONS_DIR}`);
+    process.exit(1);
+  }
+
+  const files = fs.readdirSync(MIGRATIONS_DIR).filter((f) => f.endsWith('.sql')).sort();
+  const { rows } = await pool.query('SELECT filename, checksum FROM schema_migrations');
+  const applied = new Map(rows.map((r) => [r.filename, r.checksum]));
+
+  // Drift check before applying anything — a changed file that is already
+  // applied means the recorded history no longer describes the database.
+  for (const file of files) {
+    if (!applied.has(file)) continue;
+    const current = sha256(fs.readFileSync(path.join(MIGRATIONS_DIR, file), 'utf8'));
+    if (current !== applied.get(file)) {
+      console.error(`\n  ${file} has changed since it was applied.`);
+      console.error('  Migrations are append-only. Revert it and add a new file instead.\n');
+      process.exit(1);
+    }
+  }
+
+  const pending = files.filter((f) => !applied.has(f));
+
+  if (statusOnly) {
+    for (const f of files) console.log(`  ${applied.has(f) ? 'applied' : 'PENDING'}  ${f}`);
+    if (files.length === 0) console.log('  (no migration files)');
+    return;
+  }
+
+  if (pending.length === 0) {
+    console.log('Up to date — no pending migrations.');
+    return;
+  }
+
+  for (const file of pending) {
+    const sql = fs.readFileSync(path.join(MIGRATIONS_DIR, file), 'utf8');
+    const client = await pool.connect();
+    try {
+      await client.query('BEGIN');
+      await client.query(sql);
+      await client.query(
+        'INSERT INTO schema_migrations (filename, checksum) VALUES ($1, $2)',
+        [file, sha256(sql)],
+      );
+      await client.query('COMMIT');
+      console.log(`  applied  ${file}`);
+    } catch (err) {
+      await client.query('ROLLBACK');
+      console.error(`  FAILED   ${file}\n  ${err.message}`);
+      process.exit(1);
+    } finally {
+      client.release();
+    }
+  }
+  console.log(`\n${pending.length} migration(s) applied.`);
+}
+
+main()
+  .catch((err) => { console.error(err); process.exit(1); })
+  .finally(() => pool.end());
