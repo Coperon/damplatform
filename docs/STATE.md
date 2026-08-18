@@ -10,6 +10,21 @@ A custom **Digital Asset Management (DAM)** platform. Coperon uploads assets (im
 
 ---
 
+## Version control
+
+**The project is on GitHub: https://github.com/CoperonDev/damplatform** (private, `main`).
+Committed 2026-08-18 — before that date the entire app was uncommitted on one machine.
+
+`gh` is authenticated for two accounts; **CoperonDev** owns this repo and is the
+CLI's active account. It is a personal account, not an org, and its token has no
+`delete_repo` scope.
+
+**Never committed:** `.env` / `.env.local`, `dam_backup.sql` (live user rows +
+bcrypt hashes), `minio_backup.tar.gz` (155 MB, over GitHub's file limit),
+`.claude/settings.local.json`, `node_modules/`, `.next/`.
+
+---
+
 ## Current architecture
 
 **Single Next.js 16 full-stack app** — migration from NestJS is complete.
@@ -17,19 +32,43 @@ A custom **Digital Asset Management (DAM)** platform. Coperon uploads assets (im
 | Layer | Location | Status |
 |---|---|---|
 | Frontend + API routes | `frontend/` (Next.js 16.2.9, App Router) | Active — all core routes live and tested |
-| Legacy NestJS backend | `backend_OLD_decommissioned/` | Decommissioned — do not run or restore |
-| Database | PostgreSQL 18, native Windows install | Live, fully seeded |
+| Schema migrations | `db/migrations/`, runner at `frontend/scripts/migrate.mjs` | New 2026-08-18 — baseline needs verifying against the live DB |
+| Database | PostgreSQL 18 **in Docker**, host port **5433** | Live, fully seeded |
 | Object storage | MinIO in Docker | Running, wired to upload/download routes |
-| Redis / BullMQ | Removed | Deleted from code |
-| Worker process | Deleted | Orphaned after Redis removal |
+| Legacy NestJS backend | Archived outside the repo | Removed from the tree 2026-08-18 |
+| Redis / BullMQ | In `docker-compose.yml`, unused by code | Candidate queue for the planned media worker |
+| Worker process | Not built | Planned — see Deployment notes |
+
+**Directory layout changed 2026-08-18.** The tree was flattened from
+`Coperon/damplatform/damplatform/frontend` to `Coperon/damplatform/frontend`.
+Any path in notes written before that date is stale. The repo root now holds
+`frontend/`, `damInfra/`, `db/`, and `docs/`.
 
 ---
 
 ## How to run
 
-**Database:** PostgreSQL 18 native Windows install. Starts with Windows or via Services. Connect: `"C:\Program Files\PostgreSQL\18\bin\psql.exe" -U dam -d dam` (password: `<DB_PASSWORD>`).
+**Database:** PostgreSQL 18 runs **in Docker**, not as a native Windows install.
+Start Docker Desktop, then `docker compose start` in `damInfra/`. It is published
+on **host port 5433** (5432 is taken by another project on this machine), which is
+what `DATABASE_URL` points at.
 
-**MinIO:** start via Docker Desktop. Console at `http://localhost:9001`.
+> Corrected 2026-08-18: this section previously claimed a "native Windows install"
+> reachable via `C:\Program Files\PostgreSQL\18\bin\psql.exe`. That path does not
+> exist on this machine and there is no native Postgres — it has always been the
+> container. The wrong version nearly sent the production setup down a bad path.
+
+**MinIO:** starts with the same `docker compose start`. Console at `http://localhost:9001`.
+Use `docker compose stop`, **never** `down -v` (deletes data).
+
+**Migrations:**
+```
+cd frontend
+node scripts/migrate.mjs            # apply anything pending
+node scripts/migrate.mjs --status   # show applied vs pending
+```
+Append-only. The runner stores a sha256 per file and refuses to run if an already
+applied migration changed on disk. Never edit an applied file — add a new one.
 
 **Next.js app:**
 ```
@@ -38,6 +77,49 @@ npm run dev     # http://localhost:3000
 ```
 
 That is all. There is no separate backend process to start.
+
+---
+
+## Security — outstanding (opened 2026-08-18)
+
+Real and unfixed. Do not treat the codebase as clean.
+
+**1. Secret rotation is NOT done — the old credentials are still live.**
+They were scrubbed out of this file before the first commit, so they never entered
+git history, but scrubbing a document does not invalidate a credential.
+
+| Secret | Status | Who |
+|---|---|---|
+| `JWT_SECRET` | **Still a short, guessable dictionary-word string** (the live value is in `frontend/.env.local`, not repeated here). Anyone who guesses it can mint a super-admin token. Highest priority. | me, once Postgres is up |
+| Postgres password | Unrotated | me |
+| MinIO root credentials | Unrotated — pair with creating a bucket-scoped service account, so the app stops using root | me |
+| SMTP app password | Unrotated | **only the user** can reissue (Google) |
+| `SHARE_TOKEN_KEY` | **Never rotate.** Doing so makes every existing share link permanently undecryptable. | — |
+
+Blocked on 2026-08-18 because Docker Desktop and Postgres were both down.
+
+**2. `GET /api/cover` is an IDOR.** It takes an arbitrary storage `key` from the query
+string and returns a presigned URL for it, gated only by `requireAuth`. Any authenticated
+user — including a role-5 *pending* user with no collection access at all — can read any
+object in the bucket. Keys are `uploads/<timestamp>-<filename>` and leak through list
+responses. This bypasses the entire tenant cascade the rest of the codebase is built on.
+Fix: accept a resource/collection id and run the same check as `GET /api/download/[id]`.
+
+**3. The tenant access-check CTE is duplicated across ~14 route files** even though
+`tenantHasResourceAccess` / `tenantHasCollectionAccess` already exist in
+`lib/permissions.ts`. Any access-control fix has to land 14 times, and one miss is a
+cross-client data leak. Highest-value refactor in the codebase.
+
+**4. The JWT lives in `localStorage`**, hand-read at ~100 call sites. Any XSS is full
+account takeover. Should be an httpOnly + Secure + SameSite cookie behind a
+`middleware.ts` gate — there is no middleware at all today.
+
+**5. No rate limiting anywhere** — login, forgot-password, invite redeem, and public
+share tokens are all unthrottled.
+
+**6. No index on `collections(parent_id)`**, which every recursive access check walks.
+
+**7. No tests, no CI, no staging environment.** Every stage to date was verified by hand.
 
 ---
 
@@ -222,6 +304,7 @@ Standalone Node scripts run manually from `frontend/` — not API routes, no boo
 | `scripts/backfill-covers.mjs` | One-time backfill for `collections.cover_storage_key`. **Widened in Stage 64** — for every collection with no cover, ranks candidates via a single query: a recursive `subtree` CTE (depth-tracked, `$1`-bound) feeding a 4-way `UNION ALL` (priority 0 = own `image/*`, 1 = own resource with `thumbnail_storage_key`, 2 = descendant `image/*`, 3 = descendant thumbnail), `ORDER BY priority ASC, depth ASC, created_at ASC LIMIT 1` — own files still win, then the nearest descendant rather than an arbitrarily deep leaf. Originally (Stage 59) this only ever searched a collection's own member resources; a container collection (holding only sub-collections, no direct files) could never get a cover under that rule, no matter how many images lived underneath it. Still applies the same `AND cover_storage_key IS NULL` conditional UPDATE the live write-sites use, so re-running is safe — a collection already covered (by a live upload or a prior run of this script) is never touched. Prints a summary distinguishing covered-from-own-files / covered-from-a-descendant / no-candidate. Run manually: `node scripts/backfill-covers.mjs`. | ✓ run once against the dev DB (Stage 59) — 25 of 32 collections were coverless; 16 got a cover set from their own files; 9 had no eligible member (all pure containers) and were left alone; an immediate re-run touched 0, confirming idempotency. **Re-run after the Stage 64 widening: those same 9 went to 0 coverless, all 9 covered from a descendant (0 from own files)** — matching a diagnostic query run beforehand that confirmed every remaining coverless collection had zero direct files; a further immediate re-run again touched 0, confirming idempotency still holds |
 | `scripts/regenerate-thumbnails.mjs` (Stage 65) | Bulk force-regeneration for stale video/PDF thumbnails — drives the real `POST /api/resources/[id]/thumbnail?force=true` endpoint over HTTP rather than duplicating any ffmpeg/pdfjs logic. Enumerates video/PDF resources that already have a `thumbnail_storage_key` (optional `--type=pdf`/`--type=video` filter), calls the endpoint sequentially with an admin JWT supplied via the `ADMIN_TOKEN` env var (never written to disk), tolerates per-resource failures (`regenerated`/`skipped` on 400/404/`failed` on other errors) without aborting the batch, prints a running log and a final summary. Run manually: `ADMIN_TOKEN=... node scripts/regenerate-thumbnails.mjs [--type=pdf\|video]`. | ✓ run against the dev DB with `--type=pdf` — 17 PDF resources processed, 0 failed/skipped; independently confirmed to fix a seeded stale (320×452) thumbnail back to a real 800×1132 render |
 | `scripts/migrate-to-companies.mjs` (Stage 84) | Multi-tenancy Stage 1 backfill — populates `companies`/`roles`/`company_collection_access`/`users.company_id`/`users.role_id` from the existing `group_id`/`group_collection_access` data; nothing in the app reads any of it yet. Finds-or-creates a single "Test Company"; maps `role_id` from `group_id` (1→1 super_admin, 2→3 editor, 3→4 viewer, 4→5 pending — role 2 `admin` is never assigned here); sets `company_id` to `NULL` for super admins, Test Company's id for everyone else; copies `group_collection_access` into `company_collection_access` (deduped `SELECT DISTINCT ... ON CONFLICT DO NOTHING`). Every write is guarded (`role_id`/`company_id` only set where still `NULL`; the grants insert is `ON CONFLICT DO NOTHING`). Run manually: `node scripts/migrate-to-companies.mjs`. | ✓ run against the real dev DB — 2 super_admin / 0 admin / 3 editor / 1 viewer / 1 pending (7 users total); `company_collection_access` matched `group_collection_access`'s distinct-collection set exactly (4 collections); a second run confirmed idempotent (all "newly set/inserted" counters 0, identical totals) |
+| `scripts/migrate.mjs` (2026-08-18) | **Schema migration runner.** Applies every unapplied `.sql` in `db/migrations/` in filename order, each in its own transaction, recording filename + sha256 in a `schema_migrations` table. `--status` lists applied vs pending without applying. Refuses to run if an already-applied file changed on disk, which is how silent schema drift gets caught. | Written and syntax-checked; **not yet executed against a database** (Postgres was down). |
 
 ---
 
@@ -501,7 +584,7 @@ Tested and verified (Stage 86, root-only; re-verified and extended Stage 88, any
 
 ## Database
 
-**PostgreSQL 18**, native Windows. Connection: `postgresql://dam:<DB_PASSWORD>@localhost:5432/dam`
+**PostgreSQL 18**, running **in Docker** (not a native Windows install — corrected 2026-08-18). Connection: `postgresql://dam:<DB_PASSWORD>@localhost:5433/dam` — host port **5433**, because 5432 is taken by another project's container on this machine.
 
 17 tables: `users`, `resource_types`, `resources`, `renditions`, `metadata_fields`, `resource_field_data`, `collections`, `collection_resource`, `email_tokens`, `audit_log`, `shares`, `tenants`, `roles`, `tenant_collection_access`, `invitations` (the last four added in Stage 84 — multi-tenancy schema), `access_log` (Stage 96), `tenant_role_permissions` (Stage 108). **`tenant_collection_access` is live as of Stage 86** — every collection-access read in the app checks it; `tenants`/`roles` are read by the Access editor and the JWT mint site respectively; **`invitations` is live as of Stage 90** — `POST`/`GET /api/invitations`, `DELETE /api/invitations/[id]`, and the public validate/redeem routes are its only readers/writers (see Stage 90). **`user_groups` and `group_collection_access` were dropped in Stage 94**, along with `users.group_id` — the legacy group model they backed had been dead for capability/access purposes since Stages 86/89; see "Not yet built" below for the full retirement. **`tenant_role_permissions` (Stage 108)** — `(tenant_id, role_id, permission_key)` composite PK, `enabled boolean not null`; absence of a row means "use the code default" (`lib/permissions.ts`'s `EDITOR_DEFAULTS`/`VIEWER_DEFAULTS`), so the table only ever holds explicit overrides — read by `lib/permissions.ts::hasPermission` (per-request memoized) and `GET /api/permissions`, written by `PUT`/`DELETE /api/permissions`.
 
@@ -532,6 +615,8 @@ Tested and verified (Stage 86, root-only; re-verified and extended Stage 88, any
 **Schema changes applied directly (not via a migration file — no migration tooling exists yet, so a rebuild from a fresh schema dump would miss these):** `resources.description` (Stage 14), `collections.cover_storage_key` (Stage 16), `resources.thumbnail_storage_key` (Stage 33), `metadata_fields.sort_order` (Stage 39), `metadata_fields.options` (Stage 42), new `shares` table (Stage 46, `CREATE TABLE` + 2 indexes — full DDL in Stage 46's changelog entry, not just an `ALTER`), `metadata_fields.required` (Stage 48, `ALTER TABLE ... ADD COLUMN required boolean NOT NULL DEFAULT false`), `users.full_name` renamed to `users.name` (Stage 49, `ALTER TABLE users RENAME COLUMN full_name TO name` — the column itself is original to the schema dump, nullable, and was never a later addition; only the rename is a Stage 49 change), `shares.token_encrypted` (Stage 72, `ALTER TABLE shares ADD COLUMN token_encrypted text`, nullable), `metadata_fields.exif_source` (Stage 81, `ALTER TABLE metadata_fields ADD COLUMN exif_source text`, nullable), new `tenants`/`roles`/`tenant_collection_access`/`invitations` tables + `users.tenant_id`/`users.role_id`/`users.phone` columns + the `roles` seed data (Stage 84, `CREATE TABLE` ×4, `ALTER TABLE users ADD COLUMN` ×3, `INSERT INTO roles` ×5 — full DDL in Stage 84's changelog entry), `users.role_id SET NOT NULL` (Stage 84, applied only after the backfill script confirmed every row had one), `users.role_id SET DEFAULT 5` (Stage 84, added after `NOT NULL` broke registration — see the note above), **the legacy group-model drop (Stage 94)** — run in this exact order, for the FKs: `ALTER TABLE users DROP COLUMN group_id;` (also drops `users_group_id_fkey` and `idx_users_group`) → `DROP TABLE group_collection_access;` (drops its own FK to `user_groups`) → `DROP TABLE user_groups;` (now unreferenced). Verified via a full reference sweep first (see Stage 94's changelog entry) that nothing in the app read `group_id`/`group_collection_access`/`user_groups` for any access or capability decision before dropping. **New `access_log` table (Stage 96)** — `CREATE TABLE access_log (...)` (see the Database section's own entry above for the full column list) + its two indexes, applied directly via `psql`, same as every other schema change in this list. **`access_log.metadata` (Stage 98, `ALTER TABLE access_log ADD COLUMN metadata jsonb`, nullable).** **`metadata_fields.tenant_id` (Stage 103, `ALTER TABLE metadata_fields ADD COLUMN tenant_id uuid REFERENCES tenants(id) ON DELETE CASCADE`, nullable) plus the per-scope uniqueness swap** — `ALTER TABLE metadata_fields DROP CONSTRAINT metadata_fields_name_key;` → `CREATE UNIQUE INDEX metadata_fields_global_name_key ON metadata_fields (name) WHERE tenant_id IS NULL;` → `CREATE UNIQUE INDEX metadata_fields_tenant_name_key ON metadata_fields (tenant_id, name) WHERE tenant_id IS NOT NULL;` (run in this order so uniqueness is never briefly unenforced). **`users.is_internal` (Stage 106, `ALTER TABLE users ADD COLUMN is_internal boolean NOT NULL DEFAULT false;` + `UPDATE users SET is_internal = true WHERE role_id = 1;` — the backfill is informational for role 1, whose internal status is hardcoded in code and never read from this column).** **The company→tenant terminology rename (Stage 104)** — pure renames, no new columns, no dropped data, run in one transaction in this order: `ALTER TABLE companies RENAME TO tenants;` → `ALTER TABLE company_collection_access RENAME TO tenant_collection_access;` → `ALTER TABLE tenant_collection_access RENAME COLUMN company_id TO tenant_id;` → `ALTER TABLE users RENAME COLUMN company_id TO tenant_id;` → `ALTER TABLE invitations RENAME COLUMN company_id TO tenant_id;` → `ALTER TABLE access_log RENAME COLUMN company_id TO tenant_id;` → `ALTER TABLE metadata_fields RENAME COLUMN company_id TO tenant_id;` → `ALTER TABLE tenants RENAME CONSTRAINT companies_pkey TO tenants_pkey;` → `ALTER TABLE tenant_collection_access RENAME CONSTRAINT company_collection_access_pkey TO tenant_collection_access_pkey;` → `ALTER TABLE tenant_collection_access RENAME CONSTRAINT company_collection_access_collection_id_fkey TO tenant_collection_access_collection_id_fkey;` → `ALTER TABLE tenant_collection_access RENAME CONSTRAINT company_collection_access_company_id_fkey TO tenant_collection_access_tenant_id_fkey;` → `ALTER TABLE users RENAME CONSTRAINT users_company_id_fkey TO users_tenant_id_fkey;` → `ALTER TABLE invitations RENAME CONSTRAINT invitations_company_id_fkey TO invitations_tenant_id_fkey;` → `ALTER TABLE access_log RENAME CONSTRAINT access_log_company_id_fkey TO access_log_tenant_id_fkey;` → `ALTER TABLE metadata_fields RENAME CONSTRAINT metadata_fields_company_id_fkey TO metadata_fields_tenant_id_fkey;` → `ALTER INDEX idx_access_log_company_created RENAME TO idx_access_log_tenant_created;` → `ALTER INDEX metadata_fields_company_name_key RENAME TO metadata_fields_tenant_name_key;`. Verified after: every FK, PK, and index confirmed renamed via `\d` on all five affected tables; row counts (2 tenants, 8 users, 12 global metadata fields, 4 tenant_collection_access rows, 136 resources, 32 collections, 6 shares) unchanged from immediately before the rename. **`email_tokens` widened for email-change confirmation (Stage 107)** — `ALTER TABLE email_tokens DROP CONSTRAINT email_tokens_purpose_check;` → `ALTER TABLE email_tokens ADD CONSTRAINT email_tokens_purpose_check CHECK (purpose = ANY (ARRAY['verify','reset','email_change']));` (run in that order so the CHECK is never briefly absent) → `ALTER TABLE email_tokens ADD COLUMN new_email text;` (nullable — only set for `purpose='email_change'`, holds the pending address until confirmed; see `lib/emailChange.ts`). **New `tenant_role_permissions` table (Stage 108)** — `CREATE TABLE tenant_role_permissions (tenant_id uuid NOT NULL REFERENCES tenants(id) ON DELETE CASCADE, role_id int NOT NULL REFERENCES roles(id), permission_key text NOT NULL, enabled boolean NOT NULL, PRIMARY KEY (tenant_id, role_id, permission_key));` — no seed data by design (absence of a row = the code default; see the Database section's own entry above). **`users.can_invite`** (Stage 109, `ALTER TABLE users ADD COLUMN can_invite boolean NOT NULL DEFAULT false;` + `UPDATE users SET can_invite = true WHERE role_id = 2;`) — same shape as `can_access_all_tenants`'s Stage 106 backfill (named `is_internal` until Stage 110), but here the backfill is load-bearing, not informational: every existing role-2 (tenant admin) user could send invitations before this stage under the old blanket rule, so backfilling `true` for all of them preserves that ability; a newly-created admin defaults `false` and needs an explicit super-admin grant. **Backfilled 2 of 2 existing role-2 users** (`newadmincompanytest@gmail.com` and `gkoueik@gmail.com` — see the Test accounts list below, whose stale `gkoueik` entry this stage's verification also caught and corrected), confirmed via `SELECT role_id, can_invite, count(*) FROM users GROUP BY role_id, can_invite` immediately after. **`is_internal` → `can_access_all_tenants` (Stage 110, `ALTER TABLE users RENAME COLUMN is_internal TO can_access_all_tenants;`)** — pure rename, zero behavior change; see the Stage 110 terminology note near the JWT contract below. Existing `access_log` rows carrying `action = 'internal_flag_change'` were migrated in place (`UPDATE access_log SET action = 'all_tenants_flag_change' WHERE action = 'internal_flag_change';`) rather than left mixed, so the activity feed has one code path for both historical and new rows — **1 row updated**.
 
 Test accounts — **re-verified live against the real DB during Stage 94** (group column dropped, so the list is now stated in role/tenant terms; superseding the old group-based list). Actual count is 8 (a `newadmincompanytest@gmail.com` tenant-admin account joined since the Stage 84 list was last written):
+
+> **Test-account passwords were scrubbed from this file on 2026-08-18** (they were a single shared value, and the `admin@test.local` one is a **super_admin** login). The accounts still use it. Because `dam_backup.sql` is what would seed production, these accounts and their passwords must be dealt with before any production restore — not carried over.
 - `admin@test.local` / `<TEST_PASSWORD>` → super_admin (role 1, no tenant — full access)
 - `georgeskey2004@gmail.com` / `<TEST_PASSWORD>` → super_admin (role 1, no tenant)
 - `newadmincompanytest@gmail.com` → admin (role 2, Test Company — tenant admin; `can_invite: true` since Stage 109's backfill)
@@ -548,7 +633,7 @@ Test accounts — **re-verified live against the real DB during Stage 94** (grou
 `frontend/.env.local`:
 
 ```
-DATABASE_URL=postgresql://dam:<DB_PASSWORD>@localhost:5432/dam
+DATABASE_URL=postgresql://dam:<DB_PASSWORD>@localhost:5433/dam
 JWT_SECRET=<JWT_SECRET>
 S3_ENDPOINT=http://localhost:9000
 S3_REGION=us-east-1
@@ -569,7 +654,37 @@ SHARE_TOKEN_KEY=<base64, 32 bytes decoded>
 
 ## Deployment notes
 
-Config that must be set correctly outside local dev, not just present:
+### Target hosting (decided 2026-08-18)
+
+| Tier | Where | Notes |
+|---|---|---|
+| App (Next.js) | **Vercel** | Requires the **Pro** plan — Hobby is non-commercial use only. Root Directory = `frontend`. |
+| Media (MinIO) + media worker | **Coperon's own Windows server** | Asset bytes stay on Coperon infrastructure. |
+| PostgreSQL | **Self-hosted on that same Windows server** | Deliberately not managed. |
+
+**The heavy media pipeline must move off Vercel.** `POST /api/resources/[id]/thumbnail`
+spawns `ffmpeg-static` (~78 MB binary), renders PDFs via `pdfjs-dist`, and rasterizes
+with the native `@napi-rs/canvas`. Against Vercel's limits (250 MB uncompressed bundle,
+500 MB `/tmp`, 2 GB memory) that is tight at best, and every video would travel from the
+server to Vercel and back — paid egress, twice. Plan: a worker colocated with MinIO,
+with Next.js enqueuing jobs. It runs fine on Windows; the dev box already proves it.
+
+**Three consequences of the Windows + self-hosted choice, all still open:**
+
+1. **PgBouncer has no Windows build.** Serverless pooling needs another shape — a pooler
+   in WSL2/Docker, or a tightly bounded `pg.Pool` against a raised `max_connections`.
+   `lib/db.ts` currently creates an **unbounded** pool, which will exhaust Postgres on
+   Vercel where every warm instance holds its own.
+2. **Docker Desktop is a poor fit for an unattended Windows server** — it wants an
+   interactive login session. Prefer native Windows services for Postgres, MinIO, and Caddy.
+3. **Postgres would have to be exposed to the public internet** for Vercel to reach it,
+   and Vercel's egress IPs are dynamic on Pro, so no IP allowlist is possible. This is the
+   weakest joint in the chosen design. Mitigations are TLS (`sslmode=verify-full`),
+   `scram-sha-256`, an app-only role, and a non-default port — all weaker than a private
+   network. **Not yet accepted or rejected by the team.**
+
+### Config that must be right outside local dev, not merely present
+
 
 - **`APP_URL`** must be the real public domain the app is served from (never `localhost` at any port) — it drives every generated share link and the password-reset email link, and is read fresh from the env var on every request rather than derived from the incoming request (see Stage 68, where this drifted to a stale port in dev).
 - **`SHARE_TOKEN_KEY`** must be set in every environment that creates or reads shares, and treated as a backed-up secret like `JWT_SECRET`/`DATABASE_URL` — rotating or losing it makes every existing share's encrypted-token Copy-link (Stage 72) permanently undecryptable (409/500 on retrieval), though the hash-validated public share link itself keeps working regardless.
@@ -704,3 +819,8 @@ These are known-pending features — not forgotten, not in progress. **Exception
 - ~~**`PDF_JPEG_QUALITY = 0.8` has the same unit bug as the image thumbnails**~~ **Resolved, same session, folded into Stage 83.** Fixed to `80` and all 17 existing PDF thumbnails force-regenerated — see Stage 83's updated entry.
 - ~~**New user registrations get `company_id: NULL` and are invisible to every read** (Stage 84's gap, made urgent by Stage 86)~~ **Superseded by Stage 91 — the replacement it was waiting for has shipped.** Stage 87's reasoning was that public self-registration would eventually be replaced by invite redemption (which sets `company_id` from the invite), so a stopgap DB default wasn't worth building; Stage 91 is that replacement — the UI no longer offers self-registration at all (`/signup` redirects to `/`), and invitation redemption is now the only UI path to a new account, always with a real `company_id`/`role_id`. ~~**New, narrower open item left by Stage 91 itself:** `POST /api/auth/register` was never disabled server-side, only unlinked from the UI.~~ **Resolved, Stage 105** — the route, the signup page stub, and `lib/users.ts::createUser` are all deleted; no code path creates a user except invite redemption.
 - ~~**`POST /api/collections`'s top-level creation still only writes `group_collection_access`, not `company_collection_access`**~~ **Resolved, Stage 87.** Creation-time grants now write `company_collection_access` (uuid-validated `companyIds`, fail-closed on an unknown id); the home page's create form fetches real companies via the new `GET /api/companies` instead of a hardcoded group list. Confirmed by grep to have been the last runtime writer to `group_collection_access` — nothing in `app/`/`lib/` writes that table anymore (only Stage 84's migration script still reads it). See Stage 87.
+- **Postgres exposed to the public internet** (opened 2026-08-18) — the consequence of hosting the DB on Coperon's own server while the app runs on Vercel, whose egress IPs are dynamic so no allowlist is possible. Flagged as the weakest joint in the chosen design; a concrete threat/mitigation comparison is owed before Phase 1 builds against it. Alternatives not yet ruled out: managed Postgres, or self-hosting the app too.
+- **Whether to move the repo into a GitHub organization** (opened 2026-08-18) — `CoperonDev` is a personal account, so access control is one person's account rather than team-managed. GitHub can transfer a repo into an org later without losing history, so this is deferrable, not urgent.
+- **When to rotate the live secrets** (opened 2026-08-18) — see "Security — outstanding". Rotation logs everyone out and needs Docker/Postgres running, so it was deliberately not done mid-session.
+
+---
