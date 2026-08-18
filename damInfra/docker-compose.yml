@@ -1,0 +1,66 @@
+# ============================================================================
+#  DAM — local development infrastructure
+#  Brings up the three backing services: PostgreSQL, Redis, MinIO.
+#
+#  Usage:
+#     1. Put this file and dam_schema_full.sql in the same folder.
+#     2. Copy .env.example to .env and edit the values.
+#     3. Run:  docker compose up -d
+#     4. Stop: docker compose down       (add -v to also delete the data)
+#
+#  Node.js and the media tools (ImageMagick, FFmpeg, ExifTool, Ghostscript)
+#  are installed natively on the host, not here. See the preparation runbook.
+# ============================================================================
+
+services:
+  # ---- PostgreSQL : metadata database ----
+  postgres:
+    image: postgres:18
+    container_name: dam_postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: ${POSTGRES_DB}
+    ports:
+      # Host 5433 -> container 5432: host 5432 is taken by another project's
+      # container on this machine. frontend/.env.local's DATABASE_URL matches.
+      - "5433:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql
+      # NOTE: the auto-load of dam_schema_full.sql is deliberately disabled.
+      # That file is the original 12-table v1 schema and is now stale (the live
+      # schema has 17 tables: tenants, roles, invitations, shares, access_log,
+      # tenant_role_permissions, ... and no user_groups). The database is
+      # restored from ../dam_backup.sql (pg_dump, schema + data) instead.
+      # - ./dam_schema_full.sql:/docker-entrypoint-initdb.d/01_schema.sql:ro
+
+  # ---- Redis : job queue backend (for BullMQ) ----
+  redis:
+    image: redis:7
+    container_name: dam_redis
+    restart: unless-stopped
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+
+  # ---- MinIO : S3-compatible object storage (the files) ----
+  minio:
+    image: minio/minio:latest
+    container_name: dam_minio
+    restart: unless-stopped
+    command: server /data --console-address ":9001"
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD}
+    ports:
+      - "9000:9000"   # S3 API endpoint (your code talks to this)
+      - "9001:9001"   # web console (you log in here in a browser)
+    volumes:
+      - minio_data:/data
+
+volumes:
+  postgres_data:
+  redis_data:
+  minio_data:

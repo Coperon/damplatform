@@ -1,0 +1,248 @@
+@import "tailwindcss";
+
+/* Keys Tailwind's `dark:` variant off the explicit [data-theme="dark"] attribute
+   (set by the account-menu toggle, see components/AppShell.tsx) rather than
+   `prefers-color-scheme` — the app has its own persisted, user-controlled
+   toggle, not an OS-preference-driven theme. */
+@custom-variant dark (&:where([data-theme="dark"], [data-theme="dark"] *));
+
+:root {
+  /* Brand palette — single source of truth. Sampled from coperon-technologies.png;
+     rebrand by editing these five values only. */
+  --color-brand: #00548e;
+  --color-brand-hover: #004372;
+  --color-brand-dark: #003a63;
+  --color-brand-light: #4c9ae8;
+  --color-brand-mid: #1e6fb8;
+  --shadow-color-brand: rgba(0, 84, 142, 0.35);
+
+  /* Neutral palette — the app's four most-repeated text/border/hover colors
+     (previously copy-pasted as hex literals in ~400 places). Values are
+     unchanged from those literals; this is a token promotion, not a
+     recolor. Named by role (ink/slate/line/mist), same convention as brand. */
+  --color-ink: #0F1B2A;
+  --color-slate: #5B6B7C;
+  --color-line: #E2E8F0;
+  --color-mist: #F4F7FB;
+  --color-content-base: #EAF1F8;
+
+  /* Pale-tint family — placeholders, selection states, table chrome. Named by
+     role rather than hue so a future dark-mode pass can redefine each by what
+     it *does* (a selected-ring, a table header) rather than reverse-engineering
+     the hue. Values unchanged from the literals they replace. */
+  --color-surface-tint: #EAF1FB;
+  --color-surface-tint-2: #EEF2F7;
+  --color-border-soft: #B9CFE8;
+  --color-selected-ring: #BFD9F5;
+  --color-selected-tint: #DCEAFB;
+  --color-table-header: #F1F5F9;
+  --color-input-border: #CBD5E1;
+
+  /* Structural white — cards, inputs, dropdown/modal panels. Deliberately
+     separate from literal white-on-dark text (sidebar, brand buttons), which
+     stays a plain "white" and must not read from this token. */
+  --color-card: #FFFFFF;
+
+  /* Frosted-glass values shared by .dam-glass / .dam-glass-topbar / .share-glass
+     / .dam-glass-light below — consolidated here from three previously
+     duplicated copies (components/AppShell.tsx, app/share/[token]/page.tsx,
+     and this file) so a future theme pass has exactly one place to touch.
+     Fallback = opaque background used when backdrop-filter isn't supported;
+     frosted = translucent background used under @supports. Border does not
+     change between the two states. */
+  --glass-bg-fallback: rgba(255, 255, 255, 0.9);
+  --glass-border: rgba(255, 255, 255, 0.7);
+  --glass-bg: rgba(255, 255, 255, 0.62);
+
+  --glass-topbar-bg-fallback: rgba(255, 255, 255, 0.9);
+  --glass-topbar-border: rgba(255, 255, 255, 0.6);
+  --glass-topbar-bg: rgba(255, 255, 255, 0.55);
+
+  --glass-light-bg-fallback: rgba(255, 255, 255, 0.94);
+  --glass-light-border: rgba(255, 255, 255, 0.7);
+  --glass-light-bg: rgba(255, 255, 255, 0.4);
+
+  /* AppShell's three decorative aurora blobs (components/AppShell.tsx) read
+     these instead of a hardcoded opacity number, so [data-theme="dark"] below
+     can tone them down for a near-black backdrop without touching AppShell. */
+  --aurora-opacity-1: 0.28;
+  --aurora-opacity-2: 0.3;
+  --aurora-opacity-3: 0.22;
+
+  /* Second chart series color (app/admin/analytics/page.tsx's "downloads"
+     bars — "views" reuses --color-brand, no second token needed for that
+     series). A hue distinct from brand blue and from every semantic color
+     already in use elsewhere (destructive red, the amber "Unassigned"
+     badge, success emerald) so a chart series never impersonates a status
+     color. Validated against the app's own card surface with the dataviz
+     skill's palette validator: CVD ΔE 20.5 vs --color-brand (light, protan),
+     22.4 (dark, protan) — both well clear of the 8.0 target. */
+  --color-chart-downloads: #c9541c;
+}
+
+/* Dark palette — redefines the Stage 1 tokens (same names, dark values) plus
+   the glass/aurora variables. Applied the instant `document.documentElement`
+   gets [data-theme="dark"] (set synchronously pre-paint by the anti-flash
+   script in app/layout.tsx, and toggled at runtime from the AppShell account
+   menu) — every component that already reads a token via a Tailwind utility
+   or var(--color-*) repaints with no further change needed. --color-brand-dark
+   (sidebar), --color-brand-mid, and --color-brand-light are deliberately NOT
+   redefined here: the sidebar stays the same navy in both themes by design. */
+[data-theme="dark"] {
+  --color-brand: #1878C4;
+  --color-brand-hover: #136099;
+
+  --color-ink: #E6EDF5;
+  --color-slate: #9BAAB9;
+  --color-line: #2A3A4D;
+  --color-mist: #16222F;
+  --color-content-base: #0D1620;
+  --color-card: #131E2B;
+
+  --color-surface-tint: #16232F;
+  --color-surface-tint-2: #1B2836;
+  --color-border-soft: #2F4459;
+  --color-selected-ring: #3A5A7A;
+  --color-selected-tint: #1C2E42;
+  --color-table-header: #16222F;
+  --color-input-border: #33475C;
+
+  /* Same alpha/blur as the light values — only the base channel flips from
+     white to a near-ink dark tone, per the frosted-glass formula. The borders
+     are a deliberate exception (tuned by eye, not a literal channel invert):
+     a border that also flips to near-ink would sit almost exactly on top of
+     --color-content-base's near-identical dark tone and disappear, losing the
+     card/panel edge entirely — a faint light hairline is what every OS dark
+     "vibrancy" surface (macOS, Fluent) actually uses for this reason. */
+  --glass-bg-fallback: rgba(15, 27, 42, 0.9);
+  --glass-border: rgba(255, 255, 255, 0.08);
+  --glass-bg: rgba(15, 27, 42, 0.55);
+
+  --glass-topbar-bg-fallback: rgba(15, 27, 42, 0.9);
+  --glass-topbar-border: rgba(255, 255, 255, 0.07);
+  --glass-topbar-bg: rgba(15, 27, 42, 0.5);
+
+  --glass-light-bg-fallback: rgba(15, 27, 42, 0.94);
+  --glass-light-border: rgba(255, 255, 255, 0.08);
+  --glass-light-bg: rgba(15, 27, 42, 0.4);
+
+  /* Blobs tuned for a light #EAF1F8 backdrop read as glaring/hot on a near-black
+     one at the same opacity — halved-to-thirded by eye against the live render. */
+  --aurora-opacity-1: 0.16;
+  --aurora-opacity-2: 0.14;
+  --aurora-opacity-3: 0.12;
+
+  --color-chart-downloads: #d9622c;
+}
+
+@theme inline {
+  --color-brand: var(--color-brand);
+  --color-brand-hover: var(--color-brand-hover);
+  --color-brand-dark: var(--color-brand-dark);
+  --color-brand-light: var(--color-brand-light);
+  --color-brand-mid: var(--color-brand-mid);
+  --color-ink: var(--color-ink);
+  --color-slate: var(--color-slate);
+  --color-line: var(--color-line);
+  --color-mist: var(--color-mist);
+  --color-content-base: var(--color-content-base);
+  --color-surface-tint: var(--color-surface-tint);
+  --color-surface-tint-2: var(--color-surface-tint-2);
+  --color-border-soft: var(--color-border-soft);
+  --color-selected-ring: var(--color-selected-ring);
+  --color-selected-tint: var(--color-selected-tint);
+  --color-table-header: var(--color-table-header);
+  --color-input-border: var(--color-input-border);
+  --color-card: var(--color-card);
+  --color-chart-downloads: var(--color-chart-downloads);
+  --font-sans: var(--font-geist-sans);
+  --font-mono: var(--font-geist-mono);
+}
+
+html {
+  scrollbar-gutter: stable;
+}
+
+/* Frosted-glass surfaces — canonical definitions. .dam-glass is used by
+   AppShell's content cards/search field and most page panels; .dam-glass-topbar
+   is AppShell's top bar (slightly different opacity/blur, its own border);
+   .share-glass is the public share page's identical-valued equivalent, aliased
+   here rather than duplicated; .dam-glass-light is a lighter variant for
+   secondary toolbars (e.g. the media library filter bar), sitting a visual
+   step below .dam-glass-topbar. All four share the same @supports fallback
+   pattern: an opaque background when backdrop-filter is unsupported, so text
+   never loses contrast. */
+.dam-glass,
+.share-glass {
+  background: var(--glass-bg-fallback);
+  border: 1px solid var(--glass-border);
+}
+.dam-glass-topbar {
+  background: var(--glass-topbar-bg-fallback);
+  border-bottom: 1px solid var(--glass-topbar-border);
+}
+.dam-glass-light {
+  background: var(--glass-light-bg-fallback);
+  border: 1px solid var(--glass-light-border);
+}
+@supports (backdrop-filter: blur(1px)) or (-webkit-backdrop-filter: blur(1px)) {
+  .dam-glass,
+  .share-glass {
+    background: var(--glass-bg);
+    backdrop-filter: blur(18px);
+    -webkit-backdrop-filter: blur(18px);
+  }
+  .dam-glass-topbar {
+    background: var(--glass-topbar-bg);
+    backdrop-filter: blur(16px);
+    -webkit-backdrop-filter: blur(16px);
+  }
+  .dam-glass-light {
+    background: var(--glass-light-bg);
+    backdrop-filter: blur(10px);
+    -webkit-backdrop-filter: blur(10px);
+  }
+}
+
+body {
+  background: #ffffff;
+  color: #171717;
+  font-family: Arial, Helvetica, sans-serif;
+}
+
+/* Every page wraps its content in a min-h-screen container, so body's own
+   background is never visible in normal layout — but overscroll rubber-band
+   (Safari/iOS) can briefly reveal it beyond the scrollable edge. Overridden
+   only for dark mode, where a literal white sliver would read as a flash;
+   the light value above is untouched, so light mode stays pixel-identical. */
+[data-theme="dark"] body {
+  background: var(--color-content-base);
+  color: var(--color-ink);
+}
+
+/* Dark-mode toggle's circular wipe (components/AppShell.tsx, toggleDarkMode).
+   The browser's default View Transition behavior is a cross-fade between the
+   old/new full-viewport snapshots; toggleDarkMode instead animates a
+   clip-path circle on ::view-transition-new(root) by hand, so the built-in
+   cross-fade is switched off here — otherwise both animations would run at
+   once and the wipe would look muddy/doubled. ::view-transition-old(root)
+   is left static (no animation), acting as the backdrop the new-theme circle
+   expands over. */
+::view-transition-old(root),
+::view-transition-new(root) {
+  animation: none;
+  mix-blend-mode: normal;
+}
+
+/* Slide-in transform for MetadataDrawer. Referenced via Tailwind's
+   motion-safe:animate-[dam-drawer-slide-in_...] utility, which already gates
+   on prefers-reduced-motion — reduced-motion users get the drawer with no
+   animation, just an instant appearance. */
+@keyframes dam-drawer-slide-in {
+  from {
+    transform: translateX(100%);
+  }
+  to {
+    transform: translateX(0);
+  }
+}
