@@ -12,12 +12,29 @@ A custom **Digital Asset Management (DAM)** platform. Coperon uploads assets (im
 
 ## Version control
 
-**The project is on GitHub: https://github.com/CoperonDev/damplatform** (private, `main`).
+**The project is on GitHub: https://github.com/CoperonDev/damplatform** (private).
 Committed 2026-08-18 — before that date the entire app was uncommitted on one machine.
 
-`gh` is authenticated for two accounts; **CoperonDev** owns this repo and is the
-CLI's active account. It is a personal account, not an org, and its token has no
-`delete_repo` scope.
+**Branches:** `main` (default) and `dev`, created 2026-08-31 from `main` and tracking
+`origin/dev`. Both are at the same commit as of that date.
+
+**Auth — corrected 2026-08-31, this section had it wrong.** `gh` is authenticated for
+**three** accounts, not two: `JoeYoussef44C`, `CoperonDev`, and `JoeYoussef44`. This
+file previously claimed CoperonDev was the CLI's active account; it was not — the
+active account was `JoeYoussef44C`, which **cannot see this repo at all**. It was
+switched to `CoperonDev` on 2026-08-31 and left there. CoperonDev is a personal
+account, not an org, and its token has no `delete_repo` scope.
+
+**The failure mode to recognise:** pushing or `gh repo view`-ing as the wrong account
+fails with **`Repository not found`**, never a permission error — GitHub returns 404
+rather than 403 for a private repo you cannot see, so this reads like a deleted or
+renamed repo when it is only the wrong identity. Check `gh auth status` first.
+
+**And a second, independent trap:** `credential.helper` here is `manager` (Git
+Credential Manager), so `git push` uses whatever github.com credential Windows has
+stored — **`gh auth switch` alone does not change what git pushes with.** To push as
+the gh active account, override for the one command:
+`git -c credential.helper='!gh auth git-credential' push origin <branch>`.
 
 **Never committed:** `.env` / `.env.local`, `dam_backup.sql` (live user rows +
 bcrypt hashes), `minio_backup.tar.gz` (155 MB, over GitHub's file limit),
