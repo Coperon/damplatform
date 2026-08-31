@@ -24,13 +24,27 @@ try {
   // No .env.local (e.g. CI or a server) — rely on the real environment.
 }
 
-if (!process.env.DATABASE_URL) {
-  console.error('DATABASE_URL is not set.');
+// Migrations prefer a direct (non-pooled) endpoint when one is configured.
+// A transaction-mode pooler such as Neon's -pooler host hands each statement
+// whatever backend is free, which is the wrong substrate for a long DDL
+// transaction; the direct endpoint is a real session. Falls back to
+// DATABASE_URL so a plain local Postgres, which has no such split, needs no
+// extra configuration.
+const connectionString = process.env.DIRECT_DATABASE_URL || process.env.DATABASE_URL;
+
+if (!connectionString) {
+  console.error('Neither DIRECT_DATABASE_URL nor DATABASE_URL is set.');
   process.exit(1);
 }
 
+if (process.env.DIRECT_DATABASE_URL) {
+  console.log('Using DIRECT_DATABASE_URL (direct endpoint).');
+} else if (/-pooler\./.test(connectionString)) {
+  console.warn('Warning: DATABASE_URL looks like a pooled endpoint. Set DIRECT_DATABASE_URL to the non-pooled string for migrations.');
+}
+
 const statusOnly = process.argv.includes('--status');
-const pool = new Pool({ connectionString: process.env.DATABASE_URL });
+const pool = new Pool({ connectionString });
 
 const sha256 = (s) => crypto.createHash('sha256').update(s).digest('hex');
 

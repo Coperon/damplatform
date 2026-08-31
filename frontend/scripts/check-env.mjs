@@ -94,12 +94,24 @@ async function checkDatabase() {
     const version = v.rows[0].version.split(' ').slice(0, 2).join(' ');
     ok(`connected — ${version}, database "${v.rows[0].db}"`);
 
+    // "Installed" and "available" are different questions, and only the second
+    // one is fatal. On a fresh database nothing is installed yet — that is
+    // normal, because 0001_baseline.sql does the CREATE EXTENSION itself. What
+    // would actually sink the migration is the server not offering the
+    // extension at all, or the role not being allowed to create it.
     const ext = await pool.query(
-      `SELECT extname FROM pg_extension WHERE extname IN ('pg_trgm','pgcrypto')`);
-    const have = new Set(ext.rows.map((r) => r.extname));
+      `SELECT a.name,
+              a.default_version,
+              (e.extname IS NOT NULL) AS installed
+         FROM pg_available_extensions a
+         LEFT JOIN pg_extension e ON e.extname = a.name
+        WHERE a.name IN ('pg_trgm','pgcrypto')`);
+    const seen = new Map(ext.rows.map((r) => [r.name, r]));
     for (const e of ['pg_trgm', 'pgcrypto']) {
-      if (have.has(e)) ok(`extension ${e} installed`);
-      else bad(`extension ${e} MISSING — 0001_baseline.sql creates it and will fail without it.`);
+      const row = seen.get(e);
+      if (!row) bad(`extension ${e} is NOT AVAILABLE on this server — 0001_baseline.sql cannot run.`);
+      else if (row.installed) ok(`extension ${e} installed`);
+      else ok(`extension ${e} available (v${row.default_version}), not yet installed — 0001_baseline.sql creates it`);
     }
 
     const t = await pool.query(

@@ -252,6 +252,35 @@ via `db.connect()` before `BEGIN`, and there is no `LISTEN`/`NOTIFY`, no session
 (cold start on the next request) — acceptable for beta. Set **`PG_POOL_MAX=1`** (the
 knob added 2026-08-31; see `lib/db.ts`).
 
+**The project now exists and has been reached — measured 2026-08-31 with
+`scripts/check-env.mjs`, not assumed:**
+
+| | |
+|---|---|
+| Project / branch | `long-frost-00407846` / `production` |
+| Region | **`us-east-2`** (Ohio) — see the open question below |
+| Database / role | `neondb` / `neondb_owner` (not a superuser) |
+| Server version | **PostgreSQL 18.6** — *newer* than local 18.4, so a `pg_dump` restores forward with no version problem. The version risk flagged below is **closed, favourably.** |
+| `pg_trgm` / `pgcrypto` | **Available** (v1.6 / v1.4) and `neondb_owner` **is permitted to create them** — proven by running the `CREATE EXTENSION` inside a transaction and rolling back. The baseline will not fail at line 31. |
+| Contents | **Empty — 0 tables.** Nothing is loaded yet. |
+| Connection | Pooled endpoint reached over TLS with `sslmode=verify-full`. |
+
+Both strings are configured in `frontend/.env.local`: `DATABASE_URL` is the **pooled**
+endpoint (the app), `DIRECT_DATABASE_URL` is the **direct** one. `scripts/migrate.mjs`
+now prefers `DIRECT_DATABASE_URL` when set and warns if it is about to run DDL through a
+`-pooler` host, so the right endpoint is used without anyone having to remember. Both
+were rewritten from Neon's `sslmode=require` to **`sslmode=verify-full`**. The previous
+local Docker URL is preserved as a commented line directly beneath them and was
+re-verified to still work, so switching back is one line.
+
+**Open, and cheapest to settle before any data is loaded: the region.** The project is in
+`us-east-2` (Ohio) while the app ships **English and Italian** locales
+(`locales/en.json`, `locales/it.json`). If the beta users are in Europe, every request
+pays a transatlantic round trip — and this app issues several queries per request (auth,
+permission resolution, the recursive tenant access check, then the query itself), so it
+compounds. **A Neon project's region is fixed at creation**; changing it means a new
+project. Raised 2026-08-31, not yet decided.
+
 *Check before creating the project — these are unverified and one of them can force
 rework:*
 
