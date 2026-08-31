@@ -46,15 +46,40 @@ bcrypt hashes), `minio_backup.tar.gz` (155 MB, over GitHub's file limit),
 
 **Single Next.js 16 full-stack app** — migration from NestJS is complete.
 
-| Layer | Location | Status |
+**As of 2026-08-31 there are two environments, and this matters when reading anything
+below: the *target* stack is live and empty, while the *local dev* stack still holds all
+the original data.**
+
+| Layer | Target (live, 2026-08-31) | Local dev |
 |---|---|---|
-| Frontend + API routes | `frontend/` (Next.js 16.2.9, App Router) | Active — build + prod server re-verified 2026-08-31 |
-| Schema migrations | `db/migrations/`, runner at `frontend/scripts/migrate.mjs` | New 2026-08-18 — **baseline still unverified** against the live DB (plan 2.1) |
-| Database | PostgreSQL 18 **in Docker**, host port **5433** | Live, fully seeded — 136 resources / 9 users / 32 collections |
-| Object storage | MinIO in Docker, **not pinned** — `damInfra/docker-compose.yml` says `minio/minio:latest`; the container happens to be running `RELEASE.2025-09-07` because that is what `latest` resolved to when it was pulled (corrected 2026-08-31 — this row previously claimed it was pinned) | Running, holding **307 objects / 206.5 MB**. **MinIO was archived 25 Apr 2026** and is unmaintained; move off it before beta (plan 3.2). Until then, avoid `docker compose pull` — `latest` can move under you. |
+| Frontend + API routes | `frontend/` (Next.js 16.2.9, App Router). Vercel project `damplatform`, **not yet successfully deployed** — see below | `npm run dev` |
+| Database | **Neon PostgreSQL 18.6, `eu-central-1`** (Frankfurt), pooled endpoint. Schema applied by the runner; **1 super admin, 0 resources, 0 collections** | PostgreSQL 18.4 in Docker, host port **5433** — still holds 136 resources / 9 users / 32 collections |
+| Object storage | **Backblaze B2**, bucket `coperon-dam-assets`, `eu-central-003` (Amsterdam), private, SSE-B2 on. **Empty** | MinIO in Docker — still holds 307 objects / 206.5 MB |
+| Schema migrations | `db/migrations/`, runner at `frontend/scripts/migrate.mjs` | **Baseline verified 2026-08-31** (plan 2.1) and applied to Neon |
 | Legacy NestJS backend | Archived outside the repo | Removed from the tree 2026-08-18 |
-| Redis / BullMQ | In `docker-compose.yml`, unused by code | Not needed — a DB-backed job table would do if a queue is ever wanted |
-| Worker process | Not built | Media processing runs in-request; acceptable on a single server |
+| Redis / BullMQ | Not used by any code | Not needed — a DB-backed job table would do if a queue is ever wanted |
+| Worker process | Not built | Media processing runs in-request |
+
+**The old data and media are deliberately abandoned** (decided 2026-08-31). Nothing was
+migrated: no `pg_dump` restore, no object copy. The local Docker Postgres and MinIO still
+hold everything and are untouched, should anything ever need retrieving. A side effect
+worth naming: `dam_backup.sql`'s nine legacy user rows, their bcrypt hashes, and the
+shared super-admin test password now simply never reach production, closing a risk this
+file had carried since 2026-08-18.
+
+**Switching a local checkout between the two stacks is a comment swap.**
+`frontend/.env.local` holds both sets, the Neon/B2 pair active and the Docker/MinIO pair
+commented directly beneath, each under a labelled header. Both were verified working on
+2026-08-31.
+
+**Deployment status: nothing is deployed yet, and the cause is known.** Vercel reports
+deployments as *Ready* in **2–3 seconds** — a real build of this app takes minutes.
+**Root Directory is unset**, so Vercel builds the repository root, which has no
+`package.json` and no `next.config.ts` (they are in `frontend/`), finds no framework, and
+successfully deploys nothing; the production alias then returns Vercel's own platform
+`404: NOT_FOUND`. Fix in **Settings → Build & Deployment → Root Directory → `frontend`**.
+See plan 3.3 for the rest, including the function-region setting that must be moved off
+its US default.
 
 **Directory layout changed 2026-08-18.** The tree was flattened from
 `Coperon/damplatform/damplatform/frontend` to `Coperon/damplatform/frontend`.
@@ -65,18 +90,33 @@ Any path in notes written before that date is stale. The repo root now holds
 
 ## How to run
 
-**Database:** PostgreSQL 18 runs **in Docker**, not as a native Windows install.
-Start Docker Desktop, then `docker compose start` in `damInfra/`. It is published
-on **host port 5433** (5432 is taken by another project on this machine), which is
-what `DATABASE_URL` points at.
+**`frontend/.env.local` decides which stack you are talking to.** As of 2026-08-31 it
+points at **Neon + Backblaze B2** (both in the EU, both essentially empty). The old local
+Docker Postgres + MinIO values sit directly beneath, commented, under a labelled header —
+uncomment those and comment the Neon/B2 pair to go back to the full 136-resource dev
+dataset. Both were verified working on 2026-08-31. **The file is read at startup, so
+restart `npm run dev` after editing it.**
 
-> Corrected 2026-08-18: this section previously claimed a "native Windows install"
-> reachable via `C:\Program Files\PostgreSQL\18\bin\psql.exe`. That path does not
-> exist on this machine and there is no native Postgres — it has always been the
-> container. The wrong version nearly sent the production setup down a bad path.
+**Check an environment before trusting it:**
+```
+cd frontend
+node scripts/check-env.mjs                       # database + object storage
+node scripts/check-env.mjs --db                  # database only
+node scripts/check-env.mjs --storage --write     # + a real put/get/delete probe
+node scripts/check-env.mjs --origin=https://your-domain   # + a real CORS preflight
+```
+Read-only unless `--write`, never prints a credential, and knows both providers (warns on
+a Neon direct endpoint where the app wants `-pooler`, on `sslmode=require` rather than
+`verify-full`, on `PG_POOL_MAX` not being 1; fails on a B2/R2 endpoint with the wrong
+`S3_REGION`). Point it anywhere for one command:
+`DATABASE_URL="…" node scripts/check-env.mjs --db`.
 
-**MinIO:** starts with the same `docker compose start`. Console at `http://localhost:9001`.
-Use `docker compose stop`, **never** `down -v` (deletes data).
+**Local Docker services** (only needed for the local stack): start Docker Desktop, then
+`docker compose start` in `damInfra/`. Postgres is on **host port 5433** (5432 is taken by
+another project on this machine); MinIO's console is at `http://localhost:9001`. Use
+`docker compose stop`, **never** `down -v` (deletes data). There is **no native Postgres
+and no local `psql.exe`** — reach the container with
+`docker compose exec postgres psql -U dam -d dam`.
 
 **Migrations:**
 ```
@@ -84,8 +124,18 @@ cd frontend
 node scripts/migrate.mjs            # apply anything pending
 node scripts/migrate.mjs --status   # show applied vs pending
 ```
-Append-only. The runner stores a sha256 per file and refuses to run if an already
-applied migration changed on disk. Never edit an applied file — add a new one.
+Runs against `DIRECT_DATABASE_URL` when set — the non-pooled endpoint, since DDL should
+not go through a transaction pooler — falling back to `DATABASE_URL`. Append-only: the
+runner stores a sha256 per file and refuses to run if an already applied migration changed
+on disk. Never edit an applied file — add a new one.
+
+**Bootstrapping a brand-new database** (there is no other way in — see
+`scripts/seed-admin.mjs`):
+```
+cd frontend
+node scripts/migrate.mjs                                   # schema + ledger
+node scripts/seed-admin.mjs --email you@example.com        # roles seed + first super admin
+```
 
 **Next.js app:**
 ```
@@ -158,24 +208,50 @@ storage, without shipping the known security holes. Work in phase order — each
 is independently shippable, and Phases 1–2 are deliberately cheap because they are
 easier to do now, while the only data at risk is test data.
 
-**Already landed (2026-08-31, second session) — the Vercel-readiness code changes.**
-Hosting was re-decided (Vercel + Neon + R2; see "Target hosting" and plan 3.3) and the
-four things that would have broken a Vercel deploy are fixed, `tsc --noEmit` and
-`next build` both clean:
+**Where this plan actually stands (2026-08-31, end of the second session that day).**
+Phase 2.1 is done, Phase 3.1 and 3.2 are done, Phase 3.3 is one dashboard setting away.
+Phase 1 is **not** started and still blocks real users.
+
+| Phase | Status |
+|---|---|
+| **1.1** cover IDOR | **Not started** — still open |
+| **1.2** rotate secrets | **Half done.** `JWT_SECRET` is measured at 12 characters, letters only, and must be regenerated for Vercel rather than copied — see "Vercel environment variables". Postgres and storage credentials are moot: both services are new, with new credentials. SMTP moved to a dedicated `coperontech@gmail.com` account, authentication verified. |
+| **1.3** rate limiting | **Not started** — still open |
+| **2.1** verify baseline | **Done and passed** — and it found two real defects, below |
+| **2.2** drop dead tables | **Moot for the target stack.** `resource_types`, `renditions` and `audit_log` are created by the baseline but are empty by construction on a fresh database. Still worth a migration eventually, no longer urgent. |
+| **2.3** `collections(parent_id)` index | **Not started** — cheap, and worth doing before real data |
+| **3.1** Neon | **Done** — EU, schema applied, admin seeded, login verified |
+| **3.2** Object storage | **Done** — Backblaze B2, EU, CORS configured, round-trip verified |
+| **3.3** Vercel | **Blocked on Root Directory**, which is unset. See below. |
+| **3.4** health endpoint / logging / backups | **Not started** |
+| **4.x** architectural seam | **Not started** |
+
+**Code changes that landed for Vercel** (all verified, `tsc --noEmit` and `next build`
+clean):
 
 | Change | File | Why it was a blocker |
 |---|---|---|
-| `outputFileTracingIncludes` for ffmpeg/canvas/pdfjs | `next.config.ts` | Their binaries and data files were untraced, so they'd be **absent from the deployed function while the build still succeeded** — a production-only ENOENT. Verified present in the built `.nft.json`. |
-| `maxDuration` — 300 s thumbnail, 60 s both upload routes | 3 route files | No route declared one; a serverless default of 10–15 s kills every video thumbnail. |
+| `outputFileTracingIncludes` for ffmpeg/canvas/pdfjs | `next.config.ts` | Their binaries and data files were untraced, so they would be **absent from the deployed function while the build still succeeded** — a production-only ENOENT. Confirmed present in the built `.nft.json`. |
+| `maxDuration` — 300 s thumbnail, 60 s both upload routes | 3 route files | No route declared one. 300 is exactly Hobby's ceiling, not above it (see 3.3). |
 | Bounded, env-configurable pool (`PG_POOL_MAX`, default 10) | `lib/db.ts` | Unbounded pool × N warm instances exhausts Postgres. |
-| **Pool deadlock in both upload routes** | `upload/complete`, `upload/from-url` | Post-`COMMIT` pool work ran while the transaction client was still held — a permanent hang at a small pool. Found while sizing the pool, not suspected beforehand. See "Conventions that bite". |
+| **Pool deadlock in both upload routes** | `upload/complete`, `upload/from-url` | Post-`COMMIT` pool work ran while the transaction client was still held — a permanent hang at a small pool. Found while sizing the pool, not suspected beforehand. |
+| Checksum options | `lib/storage.ts` | A presigned PUT carried `x-amz-checksum-crc32=AAAAAA==`, the CRC32 of an **empty** body, which a validating provider rejects for every real upload. |
 
-Verified live, not merely compiled: a real upload (`/api/upload/url` → presigned PUT →
-`/api/upload/complete`) returned **201 in 203 ms with `PG_POOL_MAX=1`**, where the
-pre-fix code hangs forever — the old and new shapes were also reproduced side by side
-against the live DB at `max: 1` (old: hung; new: completed). Test resource deleted; DB
-back to its 136-resource baseline. **Phases 1 and 2 are untouched and still block a
-real deployment.**
+**Two defects in `0001_baseline.sql` that would each have stopped the Neon load**, both
+found only because the file was finally run through `scripts/migrate.mjs` rather than
+`psql`: `\restrict`/`\unrestrict` psql meta-commands the `pg` driver cannot execute, and an
+emptied `search_path` that broke the runner's own bookkeeping write. See 2.1.
+
+**Two new scripts:** `scripts/check-env.mjs` (environment preflight — database, storage,
+a real write probe, a real CORS preflight) and `scripts/seed-admin.mjs` (the only way to
+create a first account on a fresh database).
+
+**Verified against the real stack, not asserted** — production build, real server, real
+HTTP, against Neon and B2 together: login returns 200 with correct `super_admin` claims;
+`POST /api/upload/url` → **PUT straight to B2** → `POST /api/upload/complete` returns 201;
+`GET /api/download/[id]` yields a presigned URL whose bytes are **identical to the
+original**; `DELETE` removes the row and the object. The smoke test cleaned up after
+itself — 0 resources, 0 objects.
 
 **Runtime status confirmed 2026-08-31** (re-verified live, not assumed): `next build`
 exits 0, `next start` serves in 643 ms, login mints a correct JWT, `GET /api/collections`
@@ -502,23 +578,44 @@ self-hosting the database:
 | Every video round-trips to Vercel and back, paid egress twice | **Half gone** — R2 charges zero egress (3.2); what remains is Vercel-side compute, not transfer cost |
 | 250 MB serverless bundle vs. the FFmpeg binary | **Real, and measured** — see below |
 
-Root Directory = `frontend`. **Pro plan is mandatory, and there are now three independent
-reasons rather than one** — the first was known, the other two were hit in practice on
-2026-08-31 while trying to deploy from the Hobby plan:
+Root Directory = `frontend`. **Correction, 2026-08-31: this file previously claimed "Pro
+plan is mandatory, and there are now three independent reasons." That was wrong — two of
+the three do not hold, and Hobby is technically sufficient for this app.** The claim was
+challenged with the obvious evidence (three other projects running fine on Hobby) and
+checked against Vercel's own limits page rather than restated.
 
-1. **Licensing.** Hobby is non-commercial-use only.
-2. **Hobby blocks deployments whose commit author is not a project collaborator**, and it
-   does not support collaboration on private repositories at all. The first `dev` push
-   was refused outright: *"The deployment was blocked because the commit author did not
-   have contributing access to the project on Vercel."* The repo is owned by
-   **CoperonDev** while commits were being authored as **JoeYoussef44C** — two of the
-   three GitHub accounts on this machine (see "Version control"). Fixed by setting a
-   **repo-local** git identity (`git config user.email dev@coperon.com`), leaving the
-   global one alone.
-3. **`maxDuration = 300` exceeds Hobby's 60-second ceiling.** The thumbnail route
-   declares 300 (plan 3.3 below); Hobby caps function duration at 60 s and rejects a
-   larger value. Even if 1 and 2 were solved, this route would not deploy — and lowering
-   it to 60 is not a fix, it just moves the failure to the first large video.
+| Claimed blocker | Actual status |
+|---|---|
+| `maxDuration = 300` exceeds Hobby's ceiling | **False.** Vercel's limits page (updated 2026-08-24) gives Hobby **300s default *and* maximum** for Node.js with fluid compute. Our 300 sits exactly at the ceiling. The 60 s figure was an outdated pre-fluid-compute limit. |
+| Hobby blocks non-collaborator commit authors | **Was true, now resolved.** The first `dev` push was refused — *"the commit author did not have contributing access"* — because the repo is owned by **CoperonDev** while commits were authored as **JoeYoussef44C** (two of the three GitHub accounts on this machine; see "Version control"). Fixed with a **repo-local** git identity (`git config user.email dev@coperon.com`), leaving the global one alone. Deployments now run under author `coperondev`. |
+| Hobby is non-commercial-use only | **Still true**, and the only reason left. That is a licensing and business decision, not a technical one. |
+
+**Other Hobby ceilings, checked against what this app actually does — all fine:**
+
+- **Memory 2 GB / 1 vCPU** (Pro gets 4 GB / 2 vCPU). The thumbnail route buffers a whole
+  file; the largest object in the old library was 50 MB. Comfortable.
+- **Bundle 250 MB uncompressed.** The thumbnail function is ~130–140 MB (see below).
+  "Large functions" up to 5 GB exist on fluid compute if that ever changes.
+- **Request/response body 4.5 MB.** Does not constrain uploads at all — the browser PUTs
+  straight to object storage via presigned URL and never sends bytes through a function.
+  It only bounds the server-side Import-from-URL path, itself capped at 15 MB in code.
+
+**The Hobby limit that does matter, and must be acted on: function region.** Vercel
+functions run in **a single region, defaulting to `iad1` (Washington DC)**, and only Pro
+and Enterprise can set *multiple* regions — but Hobby can still change the one. Neon is in
+`eu-central-1` and the B2 bucket is in Amsterdam, so leaving the default means **every
+query and every thumbnail fetch crosses the Atlantic**, undoing the entire reason the Neon
+project was deleted and recreated in the EU. **Set the function region to Frankfurt
+(`fra1`)** in Project Settings → Functions.
+
+**And the reason nothing has deployed so far, diagnosed 2026-08-31: Root Directory is not
+set.** Deployments were reporting *Ready* in **2–3 seconds** — a real Next.js build of this
+app takes minutes. Vercel was pointed at the repository root, which has no `package.json`
+and no `next.config.ts` (they are in `frontend/`), found no framework, deployed the root as
+a static site with no `index.html`, and the production alias returned Vercel's own
+platform `404: NOT_FOUND` — recognisable because it is unstyled and carries a `cdg1::`
+request id, rather than the app's own Next.js 404 page. **A green "Ready" here means a
+successful deployment of nothing.**
 
 What remains genuinely Vercel-specific was measured and closed on 2026-08-31:
 
@@ -779,6 +876,7 @@ Standalone Node scripts run manually from `frontend/` — not API routes, no boo
 
 | File | Purpose | Status |
 |---|---|---|
+| `scripts/seed-admin.mjs` | **New 2026-08-31 — the only supported way to create the FIRST account on a fresh database.** Public registration was deleted in Stage 105 and every remaining path to a user runs through `POST /api/invitations/redeem`, which needs an existing admin to send the invitation — so a new database cannot bootstrap itself without this. Applies `db/seeds/*.sql` (the five `roles` rows, whose ids are load-bearing) then inserts a role-1 super admin with **no tenant**, `status='approved'`, `email_verified`, `can_access_all_tenants`, `can_invite`. Generates a strong password when `--password` is omitted and prints it once; `--reset-password` re-points an existing account instead of failing. Mirrors `validatePasswordStrength` from `lib/users.ts` — deliberately duplicated rather than imported, since that module drags in `lib/db` and the `AppError` chain, so **any change to the password rule belongs in both places**. Uses `DIRECT_DATABASE_URL` when set, same rule as the migration runner. | Used 2026-08-31 to seed the Neon super admin; login verified end to end |
 | `scripts/check-env.mjs` | **New 2026-08-31 — environment preflight, the thing to run after pasting a new connection string.** Verifies that whatever `DATABASE_URL` and `S3_*` point at is actually usable: database connects, `pg_trgm`/`pgcrypto` present, tables exist and are not an empty database, row counts against the 136/9/32 baseline, `resources.search_vector` really is a generated column, and the state of the `schema_migrations` ledger. For storage: bucket reachable, credentials accepted, object count and size, plus an optional real put/get/delete round-trip (`--write`) and a **real CORS preflight** (`--origin=https://…`) — the one check that catches R2 denying the browser's cross-origin PUT/GET, which nothing server-side reveals. Knows the two providers: warns on a Neon *direct* endpoint where the app wants `-pooler`, on `sslmode=require` instead of `verify-full`, and on `PG_POOL_MAX` not being 1; fails on an R2 endpoint whose `S3_REGION` is not `auto`. Read-only unless `--write`. Never prints a credential. Point it anywhere for one command: `DATABASE_URL="…" node scripts/check-env.mjs --db`. | Working — run against the live dev environment 2026-08-31, all green except the ledger warning below |
 | `scripts/backfill-covers.mjs` | One-time backfill for `collections.cover_storage_key`. **Widened in Stage 64** — for every collection with no cover, ranks candidates via a single query: a recursive `subtree` CTE (depth-tracked, `$1`-bound) feeding a 4-way `UNION ALL` (priority 0 = own `image/*`, 1 = own resource with `thumbnail_storage_key`, 2 = descendant `image/*`, 3 = descendant thumbnail), `ORDER BY priority ASC, depth ASC, created_at ASC LIMIT 1` — own files still win, then the nearest descendant rather than an arbitrarily deep leaf. Originally (Stage 59) this only ever searched a collection's own member resources; a container collection (holding only sub-collections, no direct files) could never get a cover under that rule, no matter how many images lived underneath it. Still applies the same `AND cover_storage_key IS NULL` conditional UPDATE the live write-sites use, so re-running is safe — a collection already covered (by a live upload or a prior run of this script) is never touched. Prints a summary distinguishing covered-from-own-files / covered-from-a-descendant / no-candidate. Run manually: `node scripts/backfill-covers.mjs`. | ✓ run once against the dev DB (Stage 59) — 25 of 32 collections were coverless; 16 got a cover set from their own files; 9 had no eligible member (all pure containers) and were left alone; an immediate re-run touched 0, confirming idempotency. **Re-run after the Stage 64 widening: those same 9 went to 0 coverless, all 9 covered from a descendant (0 from own files)** — matching a diagnostic query run beforehand that confirmed every remaining coverless collection had zero direct files; a further immediate re-run again touched 0, confirming idempotency still holds |
 | `scripts/regenerate-thumbnails.mjs` (Stage 65) | Bulk force-regeneration for stale video/PDF thumbnails — drives the real `POST /api/resources/[id]/thumbnail?force=true` endpoint over HTTP rather than duplicating any ffmpeg/pdfjs logic. Enumerates video/PDF resources that already have a `thumbnail_storage_key` (optional `--type=pdf`/`--type=video` filter), calls the endpoint sequentially with an admin JWT supplied via the `ADMIN_TOKEN` env var (never written to disk), tolerates per-resource failures (`regenerated`/`skipped` on 400/404/`failed` on other errors) without aborting the batch, prints a running log and a final summary. Run manually: `ADMIN_TOKEN=... node scripts/regenerate-thumbnails.mjs [--type=pdf\|video]`. | ✓ run against the dev DB with `--type=pdf` — 17 PDF resources processed, 0 failed/skipped; independently confirmed to fix a seeded stale (320×452) thumbnail back to a real 800×1132 render |
@@ -1093,16 +1191,31 @@ Tested and verified (Stage 86, root-only; re-verified and extended Stage 88, any
 
 **Schema changes applied directly (not via a migration file — no migration tooling exists yet, so a rebuild from a fresh schema dump would miss these):** `resources.description` (Stage 14), `collections.cover_storage_key` (Stage 16), `resources.thumbnail_storage_key` (Stage 33), `metadata_fields.sort_order` (Stage 39), `metadata_fields.options` (Stage 42), new `shares` table (Stage 46, `CREATE TABLE` + 2 indexes — full DDL in Stage 46's changelog entry, not just an `ALTER`), `metadata_fields.required` (Stage 48, `ALTER TABLE ... ADD COLUMN required boolean NOT NULL DEFAULT false`), `users.full_name` renamed to `users.name` (Stage 49, `ALTER TABLE users RENAME COLUMN full_name TO name` — the column itself is original to the schema dump, nullable, and was never a later addition; only the rename is a Stage 49 change), `shares.token_encrypted` (Stage 72, `ALTER TABLE shares ADD COLUMN token_encrypted text`, nullable), `metadata_fields.exif_source` (Stage 81, `ALTER TABLE metadata_fields ADD COLUMN exif_source text`, nullable), new `tenants`/`roles`/`tenant_collection_access`/`invitations` tables + `users.tenant_id`/`users.role_id`/`users.phone` columns + the `roles` seed data (Stage 84, `CREATE TABLE` ×4, `ALTER TABLE users ADD COLUMN` ×3, `INSERT INTO roles` ×5 — full DDL in Stage 84's changelog entry), `users.role_id SET NOT NULL` (Stage 84, applied only after the backfill script confirmed every row had one), `users.role_id SET DEFAULT 5` (Stage 84, added after `NOT NULL` broke registration — see the note above), **the legacy group-model drop (Stage 94)** — run in this exact order, for the FKs: `ALTER TABLE users DROP COLUMN group_id;` (also drops `users_group_id_fkey` and `idx_users_group`) → `DROP TABLE group_collection_access;` (drops its own FK to `user_groups`) → `DROP TABLE user_groups;` (now unreferenced). Verified via a full reference sweep first (see Stage 94's changelog entry) that nothing in the app read `group_id`/`group_collection_access`/`user_groups` for any access or capability decision before dropping. **New `access_log` table (Stage 96)** — `CREATE TABLE access_log (...)` (see the Database section's own entry above for the full column list) + its two indexes, applied directly via `psql`, same as every other schema change in this list. **`access_log.metadata` (Stage 98, `ALTER TABLE access_log ADD COLUMN metadata jsonb`, nullable).** **`metadata_fields.tenant_id` (Stage 103, `ALTER TABLE metadata_fields ADD COLUMN tenant_id uuid REFERENCES tenants(id) ON DELETE CASCADE`, nullable) plus the per-scope uniqueness swap** — `ALTER TABLE metadata_fields DROP CONSTRAINT metadata_fields_name_key;` → `CREATE UNIQUE INDEX metadata_fields_global_name_key ON metadata_fields (name) WHERE tenant_id IS NULL;` → `CREATE UNIQUE INDEX metadata_fields_tenant_name_key ON metadata_fields (tenant_id, name) WHERE tenant_id IS NOT NULL;` (run in this order so uniqueness is never briefly unenforced). **`users.is_internal` (Stage 106, `ALTER TABLE users ADD COLUMN is_internal boolean NOT NULL DEFAULT false;` + `UPDATE users SET is_internal = true WHERE role_id = 1;` — the backfill is informational for role 1, whose internal status is hardcoded in code and never read from this column).** **The company→tenant terminology rename (Stage 104)** — pure renames, no new columns, no dropped data, run in one transaction in this order: `ALTER TABLE companies RENAME TO tenants;` → `ALTER TABLE company_collection_access RENAME TO tenant_collection_access;` → `ALTER TABLE tenant_collection_access RENAME COLUMN company_id TO tenant_id;` → `ALTER TABLE users RENAME COLUMN company_id TO tenant_id;` → `ALTER TABLE invitations RENAME COLUMN company_id TO tenant_id;` → `ALTER TABLE access_log RENAME COLUMN company_id TO tenant_id;` → `ALTER TABLE metadata_fields RENAME COLUMN company_id TO tenant_id;` → `ALTER TABLE tenants RENAME CONSTRAINT companies_pkey TO tenants_pkey;` → `ALTER TABLE tenant_collection_access RENAME CONSTRAINT company_collection_access_pkey TO tenant_collection_access_pkey;` → `ALTER TABLE tenant_collection_access RENAME CONSTRAINT company_collection_access_collection_id_fkey TO tenant_collection_access_collection_id_fkey;` → `ALTER TABLE tenant_collection_access RENAME CONSTRAINT company_collection_access_company_id_fkey TO tenant_collection_access_tenant_id_fkey;` → `ALTER TABLE users RENAME CONSTRAINT users_company_id_fkey TO users_tenant_id_fkey;` → `ALTER TABLE invitations RENAME CONSTRAINT invitations_company_id_fkey TO invitations_tenant_id_fkey;` → `ALTER TABLE access_log RENAME CONSTRAINT access_log_company_id_fkey TO access_log_tenant_id_fkey;` → `ALTER TABLE metadata_fields RENAME CONSTRAINT metadata_fields_company_id_fkey TO metadata_fields_tenant_id_fkey;` → `ALTER INDEX idx_access_log_company_created RENAME TO idx_access_log_tenant_created;` → `ALTER INDEX metadata_fields_company_name_key RENAME TO metadata_fields_tenant_name_key;`. Verified after: every FK, PK, and index confirmed renamed via `\d` on all five affected tables; row counts (2 tenants, 8 users, 12 global metadata fields, 4 tenant_collection_access rows, 136 resources, 32 collections, 6 shares) unchanged from immediately before the rename. **`email_tokens` widened for email-change confirmation (Stage 107)** — `ALTER TABLE email_tokens DROP CONSTRAINT email_tokens_purpose_check;` → `ALTER TABLE email_tokens ADD CONSTRAINT email_tokens_purpose_check CHECK (purpose = ANY (ARRAY['verify','reset','email_change']));` (run in that order so the CHECK is never briefly absent) → `ALTER TABLE email_tokens ADD COLUMN new_email text;` (nullable — only set for `purpose='email_change'`, holds the pending address until confirmed; see `lib/emailChange.ts`). **New `tenant_role_permissions` table (Stage 108)** — `CREATE TABLE tenant_role_permissions (tenant_id uuid NOT NULL REFERENCES tenants(id) ON DELETE CASCADE, role_id int NOT NULL REFERENCES roles(id), permission_key text NOT NULL, enabled boolean NOT NULL, PRIMARY KEY (tenant_id, role_id, permission_key));` — no seed data by design (absence of a row = the code default; see the Database section's own entry above). **`users.can_invite`** (Stage 109, `ALTER TABLE users ADD COLUMN can_invite boolean NOT NULL DEFAULT false;` + `UPDATE users SET can_invite = true WHERE role_id = 2;`) — same shape as `can_access_all_tenants`'s Stage 106 backfill (named `is_internal` until Stage 110), but here the backfill is load-bearing, not informational: every existing role-2 (tenant admin) user could send invitations before this stage under the old blanket rule, so backfilling `true` for all of them preserves that ability; a newly-created admin defaults `false` and needs an explicit super-admin grant. **Backfilled 2 of 2 existing role-2 users** (`newadmincompanytest@gmail.com` and `gkoueik@gmail.com` — see the Test accounts list below, whose stale `gkoueik` entry this stage's verification also caught and corrected), confirmed via `SELECT role_id, can_invite, count(*) FROM users GROUP BY role_id, can_invite` immediately after. **`is_internal` → `can_access_all_tenants` (Stage 110, `ALTER TABLE users RENAME COLUMN is_internal TO can_access_all_tenants;`)** — pure rename, zero behavior change; see the Stage 110 terminology note near the JWT contract below. Existing `access_log` rows carrying `action = 'internal_flag_change'` were migrated in place (`UPDATE access_log SET action = 'all_tenants_flag_change' WHERE action = 'internal_flag_change';`) rather than left mixed, so the activity feed has one code path for both historical and new rows — **1 row updated**.
 
-Test accounts — **re-verified live against the real DB during Stage 94** (group column dropped, so the list is now stated in role/tenant terms; superseding the old group-based list). Actual count is 8 (a `newadmincompanytest@gmail.com` tenant-admin account joined since the Stage 84 list was last written):
+### Accounts
 
-> **Test-account passwords were scrubbed from this file on 2026-08-18** (they were a single shared value, and the `admin@test.local` one is a **super_admin** login). The accounts still use it. Because `dam_backup.sql` is what would seed production, these accounts and their passwords must be dealt with before any production restore — not carried over.
-- `admin@test.local` / `<TEST_PASSWORD>` → super_admin (role 1, no tenant — full access)
-- `georgeskey2004@gmail.com` / `<TEST_PASSWORD>` → super_admin (role 1, no tenant)
-- `newadmincompanytest@gmail.com` → admin (role 2, Test Company — tenant admin; `can_invite: true` since Stage 109's backfill)
-- `gkoueik@gmail.com` → admin (role 2, Test Company — tenant admin; `can_invite: true` since Stage 109's backfill). **Corrected during Stage 109's live verification** — this list had stated role 4/viewer since Stage 94, but a live `SELECT role_id FROM users WHERE email = ...` found role 2/admin; the account was evidently promoted at some point between Stage 94 and now without this list being updated. Another live example of "re-verify with `psql`, don't trust this list blindly."
-- `test2@test.local` / `<TEST_PASSWORD>` → editor (role 3, Test Company — download + upload)
-- `viewer@test.local` / `<TEST_PASSWORD>` → editor (role 3, Test Company — download + upload; **not a viewer** despite the email, same historical drift as before, just restated without the group label)
-- `jrahhal@coperon.com` → viewer (role 4, Test Company — download only; password unknown/never guessed — use a disposable temp account for viewer-role testing instead of guessing this one's password, same caveat as always)
+**Target stack (Neon, live): exactly one account.** Seeded 2026-08-31 with
+`scripts/seed-admin.mjs` — a role-1 super admin, no tenant, `can_access_all_tenants` and
+`can_invite` set, `status='approved'`. Its generated password was shown once at creation
+and is not stored in plaintext anywhere. Everyone else must arrive through an invitation
+this account sends: Stage 105 deleted public registration, so there is no other path to a
+user, which is precisely why `seed-admin.mjs` has to exist.
+
+**Local dev stack (Docker): the original nine accounts still exist**, unchanged, still
+sharing the single test password that was scrubbed from this file on 2026-08-18. They now
+live *only* in the local container and **were deliberately not migrated** (see "Current
+architecture"). That permanently closes the standing warning that `dam_backup.sql` must
+never be allowed to seed production — it now never will. The list below therefore
+describes the local dev database only, and nothing that is deployed:
+
+- `admin@test.local` → super_admin (role 1, no tenant). **The shared test password is a
+  super-admin login — treat the local database as a credential, not as scratch data.**
+- `georgeskey2004@gmail.com` → super_admin (role 1, no tenant)
+- `newadmincompanytest@gmail.com`, `gkoueik@gmail.com` → admin (role 2, Test Company),
+  both `can_invite: true` since Stage 109's backfill
+- `test2@test.local`, `viewer@test.local` → editor (role 3, Test Company). The second is
+  **not** a viewer despite its name — historical drift, repeatedly re-confirmed.
+- `jrahhal@coperon.com` → viewer (role 4, Test Company); its password was never known —
+  use a disposable account for viewer-role testing rather than trying to guess it
 - `jyoussef@coperon.com` → pending (role 5, Test Company — no access)
 
 ---
