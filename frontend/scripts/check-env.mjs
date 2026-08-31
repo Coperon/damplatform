@@ -224,13 +224,18 @@ async function checkStorage() {
   if (origin) {
     for (const method of ['PUT', 'GET']) {
       try {
+        // Only the upload leg sends Content-Type, so only it should ask for that
+        // header in the preflight. Asking on the GET leg too would fail a bucket
+        // whose rules are correct but tight (B2's own read-only preset allows
+        // just "authorization, range"), reporting a problem that is not there.
+        const headers = {
+          Origin: origin,
+          'Access-Control-Request-Method': method,
+        };
+        if (method === 'PUT') headers['Access-Control-Request-Headers'] = 'content-type';
         const res = await fetch(`${S3_ENDPOINT.replace(/\/$/, '')}/${S3_BUCKET}/_cors-probe`, {
           method: 'OPTIONS',
-          headers: {
-            Origin: origin,
-            'Access-Control-Request-Method': method,
-            'Access-Control-Request-Headers': 'content-type',
-          },
+          headers,
         });
         const allow = res.headers.get('access-control-allow-origin');
         if (allow === origin || allow === '*') ok(`CORS ${method}: allowed for ${origin}`);

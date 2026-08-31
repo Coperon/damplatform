@@ -323,74 +323,77 @@ rework:*
   hashes, and a shared test-account password that is a **super_admin** login. Decide what
   happens to those accounts *before* the restore, not after.
 
-**3.2 Object storage — moving to Cloudflare R2.** **MinIO was archived 25 April 2026**;
-the repo is read-only, development stopped Feb 2026, and the community edition is
-source-only with no precompiled binaries. The local container is pinned to a 2025 release
-that will receive no security updates. **Cloudflare R2** — 10 GB free, zero egress, which
-matters more than Backblaze B2's cheaper per-GB rate because a DAM's whole job is serving
-files.
+**3.2 Object storage — Backblaze B2 (decided 2026-08-31; replaces the R2 recommendation).**
+**MinIO was archived 25 April 2026** — repo read-only, development stopped Feb 2026,
+community edition source-only — so the local container is pinned to nothing and will
+receive no security updates. **Cloudflare R2 was the original recommendation and was
+rejected on a hard constraint: Cloudflare requires a payment method to enable R2, even on
+the free tier, and the team does not want to put card details there.** Backblaze B2 needs
+no card for its permanent 10 GB free tier, and its S3-compatible API was verified against
+this application's actual requirements rather than assumed.
 
-*Current inventory, measured 2026-08-31 (this file previously said 155 MB — stale):*
+**The bucket exists and has been proven end-to-end — measured 2026-08-31 with
+`scripts/check-env.mjs`:**
 
 | | |
 |---|---|
-| Objects in bucket | **307** |
-| Total size | **206.5 MB** (largest single object 50.2 MB) — comfortably inside R2's 10 GB free tier |
-| Key prefixes | `uploads/`, `thumbnails/` |
-| Keys referenced by the DB | 277 |
-| **Referenced but missing** | **0** — no broken links |
-| Orphaned in store | 30 (unreferenced bytes, from deleted resources and test residue) |
+| Bucket | `coperon-dam-assets`, **private**, SSE-B2 encryption on, Object Lock off |
+| Endpoint / region | `https://s3.eu-central-003.backblazeb2.com` / **`eu-central-003`** (Amsterdam) |
+| `S3_REGION` | the region slug from the endpoint host — **not `auto`**, which is R2-only |
+| Path-style addressing | **Works.** `lib/storage.ts` hardcodes `forcePathStyle: true`; this was the one compatibility unknown and it is now closed. |
+| Presigned PUT/GET | **Work**, including the checksum fix — a real put → get → delete round-trip returned byte-identical data. |
+| CORS | Configured for `http://localhost:3000` and `https://damplatform.vercel.app`; both `PUT` and `GET` verified by real preflight. |
 
-Storage keys in the database are **all relative** (verified: 0 of 136 resources hold an
-absolute URL), so copying objects under identical keys means every existing
-`storage_key`, `thumbnail_storage_key` and `cover_storage_key` resolves unchanged with no
-data rewrite. Copy with `rclone`; **keep the keys byte-identical.**
+**No application code change was needed for B2** beyond the checksum options already in
+`lib/storage.ts`. The storage layer is genuinely portable, as designed.
 
-*Blocker 1 — the checksum bug is real, and worse than "some providers reject the
-header."* Proven by inspecting a generated URL on 2026-08-31: the presigned **PUT**
-carries `x-amz-checksum-crc32=AAAAAA==` as a query parameter. `AAAAAA==` is the CRC32 of
-an **empty body** — presigning has no payload to hash, so the SDK baked in the checksum of
-nothing. MinIO ignores it, which is why uploads work today; a provider that *validates* it
-will reject **every upload of a non-empty file**. The presigned GET likewise carries
-`x-amz-checksum-mode=ENABLED`. The fix is two options on the `S3Client` in
-`lib/storage.ts`, confirmed on 2026-08-31 to remove both parameters:
-`requestChecksumCalculation: 'WHEN_REQUIRED'` and
-`responseChecksumValidation: 'WHEN_REQUIRED'`.
+*The CORS trap, which cost real time and will cost it again on the next bucket:*
 
-**This is the only code change either migration requires.** Everything else is config.
+- **B2's web-UI CORS presets are read-only.** "Share everything in this bucket with this
+  one origin" writes a rule allowing **`GET` and `HEAD` only**, with
+  `allowedHeaders: ["authorization", "range"]`. That is built for serving files publicly.
+  This app needs the browser to **`PUT`** (every upload) and to send `content-type`, so
+  the preset can never work no matter which origin is typed into it. It also accepts
+  exactly **one** origin, while the app needs at least localhost plus the deployed domain.
+- **The origin field rejects a trailing slash** — `https://x.vercel.app/` is a URL, not an
+  origin, and B2 answers "an allowedOrigin doesn't look like an origin".
+- **`PutBucketCors` over the S3 API is refused** once native rules exist: *"The bucket
+  contains B2 Native CORS rules. Please use B2 Native API instead."* So custom rules must
+  go through the **B2 Native API** (`b2_authorize_account` → `b2_update_bucket` with a
+  `corsRules` array) or the B2 CLI, not the S3 SDK.
+- The working rule, for reference — `allowedOperations` uses B2's `s3_*` verbs, not HTTP
+  method names:
+  ```json
+  { "corsRuleName": "damAppOrigins",
+    "allowedOrigins": ["http://localhost:3000", "https://damplatform.vercel.app"],
+    "allowedOperations": ["s3_get", "s3_head", "s3_put"],
+    "allowedHeaders": ["*"], "exposeHeaders": ["etag"], "maxAgeSeconds": 3600 }
+  ```
+- **Diagnose with `GetBucketCors`, not by guessing.** Reading back what B2 actually stored
+  is what revealed the preset was `GET`/`HEAD`-only; the browser-side symptom is an opaque
+  403 with no `Access-Control-Allow-Origin` header, identical for every possible cause.
 
-*Blocker 2 — CORS, which nothing in this plan previously mentioned.* The browser talks to
-object storage **directly**, cross-origin, on both legs: `fetch(uploadUrl, {method:'PUT'})`
-for every upload, and `fetch(presignedGetUrl)` → `URL.createObjectURL(blob)` for every
-thumbnail, cover, download and bulk-zip member. **MinIO permits cross-origin requests by
-default; R2 denies them by default.** Without a bucket CORS policy the app appears to work
-until any file is uploaded or displayed. Configure on the R2 bucket before cutover:
-allowed origins = the real app origin (plus any preview domains), allowed methods = `GET`
-and `PUT`, allowed headers = at least `content-type`. Note `X-Amz-SignedHeaders` is `host`
-only, so the browser's `Content-Type` is not part of the signature and cannot cause a
-mismatch.
+*Two things still outstanding on this bucket:*
 
-*Configuration:*
+- **File Lifecycle is "Keep all versions".** That silently defeats the app's *permanent*
+  delete (`DELETE /api/resources/[id]` and the tenant-deletion cleanup both remove stored
+  bytes): B2 keeps the bytes behind a delete marker, so a client asking for their assets to
+  be destroyed would not actually get that. It also accumulates garbage, since
+  `POST /api/resources/[id]/thumbnail?force=true` overwrites the same key on every
+  regeneration. **Change to "Keep only the last version"** — versioning contradicts this
+  app's own stated behaviour rather than protecting it.
+- **The application key is over-privileged.** Its capabilities include `writeBuckets`,
+  `writeBucketEncryption`, `writeBucketReplications` and more. The app only ever needs
+  `listFiles`, `readFiles`, `writeFiles`, `deleteFiles` on this one bucket. Narrow it before
+  the key is pasted into Vercel — it will live there as a long-term secret. (Note that
+  narrowing it removes `writeBuckets`, so change the CORS rules *first*, or keep a separate
+  admin key for that.)
 
-| Var | Value |
-|---|---|
-| `S3_ENDPOINT` | `https://<account-id>.r2.cloudflarestorage.com` |
-| `S3_REGION` | **`auto`** — R2's region. `lib/storage.ts` defaults to `us-east-1`, so this must be set explicitly. |
-| `S3_ACCESS_KEY` / `S3_SECRET_KEY` | An R2 API token **scoped to this one bucket**, not account-wide — and the natural moment to stop using root credentials (Phase 1.2). |
-| `S3_BUCKET` | the R2 bucket name |
-
-`forcePathStyle: true` is hardcoded and correct for R2, which addresses buckets as
-`<endpoint>/<bucket>/<key>`.
-
-*Verification after the copy — do not accept "the app loads" as proof:*
-
-1. Re-run the reconciliation that produced the table above: **all 277 referenced keys must
-   resolve in R2, and "referenced but missing" must still be 0.**
-2. A real upload round-trip through the actual flow: `POST /api/upload/url` → browser PUT
-   → `POST /api/upload/complete` → the file downloads back and its bytes match. This is
-   what proves the checksum fix, and nothing else does.
-3. A thumbnail and a collection cover rendering in a browser — that, and only that, proves
-   the CORS policy is right.
+*Data still to migrate:* the local bucket holds **307 objects / 206.5 MB**, of which 277
+keys are referenced by the database, **0 referenced-but-missing**, and 30 orphans. Copy
+with `rclone` under **byte-identical keys** — every `storage_key`, `thumbnail_storage_key`
+and `cover_storage_key` in the database is relative, so nothing needs rewriting. Afterwards
+re-run the reconciliation: all 277 referenced keys must resolve and missing must still be 0.
 
 **3.3 Vercel for the app (decided 2026-08-31, reversing the IIS plan).** IIS was only
 ever chosen because Postgres and MinIO were going to live on that same Windows box.
@@ -1035,7 +1038,7 @@ today, and local dev is unchanged by leaving them unset):**
 |---|---|---|
 | App (Next.js) | **Vercel, Pro plan** | Root Directory = `frontend`. Pro is mandatory — Hobby is non-commercial use only. |
 | PostgreSQL | **Neon**, pooled (`-pooler`) connection string | Codebase verified transaction-pooler safe (plan 3.1). |
-| Object storage | **Cloudflare R2** | 10 GB free vs. **206.5 MB / 307 objects** in use (measured 2026-08-31); zero egress. One code change (the checksum options in plan 3.2), otherwise config-only — `lib/storage.ts` is already env-driven. |
+| Object storage | **Backblaze B2** — bucket `coperon-dam-assets`, EU Central | Chosen over Cloudflare R2 because **R2 requires a payment method even on its free tier** and the team declined to add one. 10 GB free, no card, permanent. Live and verified 2026-08-31 (presigned URLs, path-style, CORS all proven); **206.5 MB / 307 objects still to copy across**. Caveat: B2 free egress is only ~3x stored bytes per month, where R2 was zero — watch it under real traffic. |
 | Transactional email | **A provider (Resend/Postmark), not Gmail SMTP** | Not yet done — see below. |
 | Coperon's Windows server | **No longer in the design** | Nothing is deployed to it. |
 
