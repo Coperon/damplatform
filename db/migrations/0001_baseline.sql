@@ -7,7 +7,7 @@
 -- PostgreSQL database dump
 --
 
-\restrict ElRzD1MiQMCWTtQskzaPV3HS8Cvgc3MT5P0MHPW9TcGJY4xZ5QxaodbW1J2GkQF
+-- (removed) \restrict : a psql client meta-command emitted by pg_dump 18, not SQL. The pg driver cannot execute it, so scripts/migrate.mjs failed with a syntax error. Safe to drop -- it is a psql session directive, not schema.
 
 -- Dumped from database version 18.4
 -- Dumped by pg_dump version 18.4
@@ -1085,5 +1085,5 @@ ALTER TABLE ONLY public.users
 -- PostgreSQL database dump complete
 --
 
-\unrestrict ElRzD1MiQMCWTtQskzaPV3HS8Cvgc3MT5P0MHPW9TcGJY4xZ5QxaodbW1J2GkQF
+-- (removed) \unrestrict : a psql client meta-command emitted by pg_dump 18, not SQL. The pg driver cannot execute it, so scripts/migrate.mjs failed with a syntax error. Safe to drop -- it is a psql session directive, not schema.
 

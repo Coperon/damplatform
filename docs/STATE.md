@@ -51,7 +51,7 @@ bcrypt hashes), `minio_backup.tar.gz` (155 MB, over GitHub's file limit),
 | Frontend + API routes | `frontend/` (Next.js 16.2.9, App Router) | Active — build + prod server re-verified 2026-08-31 |
 | Schema migrations | `db/migrations/`, runner at `frontend/scripts/migrate.mjs` | New 2026-08-18 — **baseline still unverified** against the live DB (plan 2.1) |
 | Database | PostgreSQL 18 **in Docker**, host port **5433** | Live, fully seeded — 136 resources / 9 users / 32 collections |
-| Object storage | MinIO in Docker, pinned `RELEASE.2025-09-07` | Running — but **MinIO was archived 25 Apr 2026** and is unmaintained; move off it before beta (plan 3.2) |
+| Object storage | MinIO in Docker, **not pinned** — `damInfra/docker-compose.yml` says `minio/minio:latest`; the container happens to be running `RELEASE.2025-09-07` because that is what `latest` resolved to when it was pulled (corrected 2026-08-31 — this row previously claimed it was pinned) | Running, holding **307 objects / 206.5 MB**. **MinIO was archived 25 Apr 2026** and is unmaintained; move off it before beta (plan 3.2). Until then, avoid `docker compose pull` — `latest` can move under you. |
 | Legacy NestJS backend | Archived outside the repo | Removed from the tree 2026-08-18 |
 | Redis / BullMQ | In `docker-compose.yml`, unused by code | Not needed — a DB-backed job table would do if a queue is ever wanted |
 | Worker process | Not built | Media processing runs in-request; acceptable on a single server |
@@ -218,6 +218,96 @@ are unthrottled and reachable from the open internet once deployed.
 the Phase 0 session and **never checked**. Everything about the Neon move depends on it
 being right. Postgres is running again, so this is now cheap.
 
+**DONE and PASSED, 2026-08-31 — but only on the second attempt, and the first attempt is
+the instructive one.** The initial check applied the baseline with **`psql`**, which
+passed cleanly and proved nothing useful: `psql` is not what applies migrations. Running
+it through the real runner, `scripts/migrate.mjs`, surfaced **two defects that would each
+have blocked the Neon deployment outright**:
+
+1. **`\restrict` / `\unrestrict` on lines 10 and 1088.** PostgreSQL 18's `pg_dump` emits
+   these; they are **psql client meta-commands, not SQL**, so the `pg` driver dies with
+   `syntax error at or near "\"`. Neutralised to comments — they are session directives,
+   never schema.
+2. **`SELECT pg_catalog.set_config('search_path', '', false)` on line 21.** `pg_dump`
+   empties the search path so its own statements are fully schema-qualified. The runner's
+   own `INSERT INTO schema_migrations` was *not* qualified, so it failed with
+   `relation "schema_migrations" does not exist` — the migration applied, then the
+   bookkeeping write failed and rolled the whole thing back. Fixed **in the runner**, not
+   the file, because any future `pg_dump`-derived migration does the same thing:
+   `public.schema_migrations` is now qualified everywhere, and the runner issues
+   `RESET search_path` after each migration so an empty path cannot ride the pooled
+   connection back out (`false` makes `set_config` session-wide, not transaction-local).
+
+**Editing an applied migration would normally be forbidden.** It was legitimate here
+precisely because Phase 2.1's own finding was that this file **had never been applied
+anywhere** — no environment had a `schema_migrations` row for it, so no recorded history
+could disagree with the edit.
+
+Then verified as prescribed: scratch empty database, applied via `scripts/migrate.mjs`,
+and diffed
+`pg_dump --schema-only --no-owner --no-acl --no-comments` of the result against the same
+dump of the live `dam` database.
+
+| | Live `dam` | Baseline-produced |
+|---|---|---|
+| Schema dump | 309 lines | 309 lines |
+| **Diff** | **0 lines — byte-identical** | |
+| Tables / indexes / constraints | 17 / 44 / 131 | 17 / 44 / 131 |
+
+The file also **applies cleanly to an empty database on the first run**, which had never
+been demonstrated before — it is not idempotent on a second run (plain `CREATE TABLE`,
+no `IF NOT EXISTS`), which is correct for a ledger-tracked migration and not a defect.
+The scratch database was dropped afterwards; the live one was never touched.
+
+*Context for why this mattered:* `scripts/check-env.mjs` found the live dev database has
+**no `schema_migrations` table at all** — it was restored from `dam_backup.sql` rather
+than built by migrations, so the ledger and the schema had never agreed and the baseline
+had never executed anywhere. That is now closed: the file is proven both to run **through
+the real runner** and to reproduce the real schema exactly.
+
+### Neon is now live and seeded (2026-08-31)
+
+**Decision, taken this session: the old data and media are abandoned.** No `pg_dump`
+restore was performed and none is planned — no 136 resources, no 32 collections, no nine
+legacy user rows, and no `dam_backup.sql`. That also disposes of the standing worry that
+`dam_backup.sql`'s bcrypt hashes and shared super-admin test password must never reach
+production: they now simply never do. The local Docker Postgres and MinIO still hold the
+old data and are untouched, should anything need retrieving.
+
+The EU Neon database was built the clean way instead — `node scripts/migrate.mjs`, so the
+schema and the ledger agree **by construction** rather than by a hand-inserted row:
+
+| | |
+|---|---|
+| Schema | 18 tables (17 + `schema_migrations`), applied by the runner |
+| Ledger | `applied  0001_baseline.sql` — honest from the first commit |
+| Reference data | `db/seeds/0001_reference_data.sql` — the five `roles` rows, whose ids are load-bearing |
+| Users | **1** — one super admin. Resources and collections: 0. |
+
+**New: `scripts/seed-admin.mjs`.** Public registration was deleted in Stage 105 and every
+remaining path to a user runs through `POST /api/invitations/redeem`, which needs an
+existing admin to send the invitation — so a fresh database had **no way to bootstrap
+itself**. This script is now the only supported way to create the first account: it
+applies `db/seeds/*.sql`, then inserts a role-1 super admin with no tenant
+(`can_access_all_tenants`, `can_invite`, `status='approved'`), generating a strong
+password when none is given and mirroring `validatePasswordStrength` from `lib/users.ts`.
+`--reset-password` re-points an existing account instead of failing.
+
+**Proven end to end against the real stack, not asserted** — production build, real
+server, real HTTP:
+
+- `POST /api/auth/login` → **200**, and the minted JWT carries `roleId: 1`,
+  `roleName: "super_admin"`, `canAdmin: true`, `tenantId: null`, `canAccessAllTenants: true`.
+- `GET /api/collections` → 200 `[]`.
+- Full upload path: `POST /api/upload/url` → **PUT straight to Backblaze B2** (200) →
+  `POST /api/upload/complete` → **201**.
+- `GET /api/download/[id]` → presigned URL → fetched from B2 → **bytes byte-identical to
+  the original**.
+- `DELETE /api/resources/[id]` → 200, and the object is gone from B2.
+
+Afterwards: **0 resources, 0 objects in the bucket** — the smoke test cleaned up after
+itself. Both halves of the new stack are confirmed working together.
+
 **2.2 Drop three dead tables.** Verified 2026-08-31 against both the live DB and a full
 `app/`+`lib/`+`scripts/` reference sweep — all three have zero rows *and* zero code
 references:
@@ -236,31 +326,167 @@ recursive access check in the app walks that column and only the PK exists today
 
 ### Phase 3 — Infrastructure move
 
-**3.1 Neon.** Create the project, apply migrations with `node scripts/migrate.mjs`,
-load the data. **Use the pooled (`-pooler`) connection string** — verified 2026-08-31
-that the codebase is transaction-mode-pooler safe: every transaction takes a dedicated
-client via `db.connect()` before `BEGIN`, and there is no `LISTEN`/`NOTIFY`, no
-session-scoped `SET`, and no SQL-level `PREPARE` anywhere. Free tier compute suspends
-after 5 min idle (cold start on the next request) — acceptable for beta.
+**3.1 Neon.** Use the pooled (`-pooler`) connection string — verified 2026-08-31 that
+the codebase is transaction-mode-pooler safe: every transaction takes a dedicated client
+via `db.connect()` before `BEGIN`, and there is no `LISTEN`/`NOTIFY`, no session-scoped
+`SET`, and no SQL-level `PREPARE` anywhere. Free tier compute suspends after 5 min idle
+(cold start on the next request) — acceptable for beta. Set **`PG_POOL_MAX=1`** (the
+knob added 2026-08-31; see `lib/db.ts`).
 
-**3.2 Object storage — moving off MinIO.** **MinIO was archived 25 April 2026**; the
-repo is read-only, MinIO Inc. stopped development in Feb 2026, and the community edition
-is source-only with no precompiled binaries. The local container is pinned to a 2025
-release that will receive no security updates. Fine for dev, wrong foundation for a
-beta holding client assets. **Recommended: Cloudflare R2** — 10 GB free (current usage
-155 MB), zero egress, which matters more than Backblaze B2's cheaper per-GB storage
-because a DAM's whole job is serving files. Migration is config-only (`lib/storage.ts`
-already reads endpoint/creds/bucket from env); copy objects with `rclone`, keep the
-keys identical so every existing `storage_key` still resolves.
-**Expect one incompatibility:** since v3.729.0 the AWS SDK sends a CRC32 checksum on
-every upload by default and several S3-compatible providers reject it. `package.json`
-pins `^3.1075.0` and the behaviour is live (presigned URLs carry
-`x-amz-checksum-mode=ENABLED`). If uploads fail with `InvalidArgument` / unsupported
-header, set `requestChecksumCalculation: "WHEN_REQUIRED"` and
-`responseChecksumValidation: "WHEN_REQUIRED"` on the `S3Client`.
-If asset bytes must stay on Coperon hardware for a contractual or data-residency
-reason — this file records the intent but never a reason — then R2 is out and the path
-is AIStor Free (MinIO's successor), not archived MinIO. **Settle this explicitly.**
+**The project now exists and has been reached — measured 2026-08-31 with
+`scripts/check-env.mjs`, not assumed:**
+
+| | |
+|---|---|
+| Project / branch | recreated 2026-08-31, EU; endpoint host `ep-dry-pond-b2k9cl4l` |
+| Region | **`eu-central-1`** (Frankfurt) — the original `us-east-2` project was **deleted and recreated in the EU on 2026-08-31**, while it was still empty and therefore free to move. Now co-located with the B2 bucket in Amsterdam. |
+| Database / role | `neondb` / `neondb_owner` (not a superuser) |
+| Server version | **PostgreSQL 18.6** — *newer* than local 18.4, so a `pg_dump` restores forward with no version problem. The version risk flagged below is **closed, favourably.** |
+| `pg_trgm` / `pgcrypto` | **Available** (v1.6 / v1.4) and `neondb_owner` **is permitted to create them** — proven by running the `CREATE EXTENSION` inside a transaction and rolling back. The baseline will not fail at line 31. |
+| Contents | **Empty — 0 tables.** Nothing is loaded yet. |
+| Connection | Pooled endpoint reached over TLS with `sslmode=verify-full`. |
+
+Both strings are configured in `frontend/.env.local`: `DATABASE_URL` is the **pooled**
+endpoint (the app), `DIRECT_DATABASE_URL` is the **direct** one. `scripts/migrate.mjs`
+now prefers `DIRECT_DATABASE_URL` when set and warns if it is about to run DDL through a
+`-pooler` host, so the right endpoint is used without anyone having to remember. Both
+were rewritten from Neon's `sslmode=require` to **`sslmode=verify-full`**. The previous
+local Docker URL is preserved as a commented line directly beneath them and was
+re-verified to still work, so switching back is one line.
+
+**Region: settled 2026-08-31.** The project was originally created in `us-east-2` (Ohio) while the app ships English *and* Italian locales and the B2 bucket sits in EU Central. Because a Neon project’s region is fixed at creation, the project was **deleted and recreated in `eu-central-1`** while it was still empty — the only moment it was free to do so. Database and object storage are now both in Europe, and no request has to cross the Atlantic.
+
+*Check before creating the project — these are unverified and one of them can force
+rework:*
+
+- **Postgres version.** Local is **18.4**. If Neon's newest offering is older, a
+  `pg_dump` taken from 18 is **not guaranteed to restore into it** — dumps are forward-
+  compatible, not backward. Check Neon's available versions *first*; if 18 is not
+  offered, take the dump with the older `pg_dump` binary matching the target.
+- **Extensions.** `0001_baseline.sql` creates **`pg_trgm`** and **`pgcrypto`**. Both are
+  normally available on Neon, but confirm before assuming — the baseline fails at line 31
+  otherwise.
+- **`resources.search_vector` is a `GENERATED ALWAYS AS (...) STORED` tsvector.** It
+  restores as a generated column and must not be dumped as data; verify it is present and
+  populated after the load, since search silently returns nothing if it is not.
+
+*Load order matters, and the obvious approach corrupts the migration ledger:*
+
+1. **Do Phase 2.1 first.** `0001_baseline.sql` has still never been verified against the
+   live database. Everything here assumes it is right; if it is wrong, it is wrong on
+   Neon too, only now with data on top.
+2. **Restore a full `pg_dump` (schema + data)** into the empty Neon database. Do *not*
+   run `migrate.mjs` first and then load a `--data-only` dump: data-only restores do not
+   guarantee foreign-key ordering, and the usual escape hatch — `--disable-triggers` —
+   **requires superuser, which Neon does not grant.**
+3. **Then mark the baseline as applied by hand**, or the ledger will claim the schema was
+   never created. `migrate.mjs` records a sha256 per file and will otherwise report
+   `0001_baseline.sql` as PENDING and try to re-run it. Compute the hash the same way the
+   runner does (sha256 of the file read as utf8), then insert one row into Neon:
+   `INSERT INTO schema_migrations (filename, checksum) VALUES ('0001_baseline.sql', '<hash>');`
+   Confirm with `node scripts/migrate.mjs --status` → `applied  0001_baseline.sql`.
+4. **Verify row counts against the known baseline: 136 resources / 9 users / 32
+   collections.**
+
+*Two operational facts that are easy to trip over:*
+
+- **Migrations can never run on Vercel.** `migrate.mjs` resolves `../../db/migrations`,
+  and `db/` sits *outside* `frontend/`, which is the Root Directory Vercel deploys — the
+  directory simply is not there. Migrations run from a local checkout or CI with
+  `DATABASE_URL` pointed at Neon. This is fine, but it must be someone's documented job.
+- **`dam_backup.sql` is not a production seed.** It carries live user rows, bcrypt
+  hashes, and a shared test-account password that is a **super_admin** login. Decide what
+  happens to those accounts *before* the restore, not after.
+
+**3.2 Object storage — Backblaze B2 (decided 2026-08-31; replaces the R2 recommendation).**
+**MinIO was archived 25 April 2026** — repo read-only, development stopped Feb 2026,
+community edition source-only — so the local container is pinned to nothing and will
+receive no security updates. **Cloudflare R2 was the original recommendation and was
+rejected on a hard constraint: Cloudflare requires a payment method to enable R2, even on
+the free tier, and the team does not want to put card details there.** Backblaze B2 needs
+no card for its permanent 10 GB free tier, and its S3-compatible API was verified against
+this application's actual requirements rather than assumed.
+
+**The bucket exists and has been proven end-to-end — measured 2026-08-31 with
+`scripts/check-env.mjs`:**
+
+| | |
+|---|---|
+| Bucket | `coperon-dam-assets`, **private**, SSE-B2 encryption on, Object Lock off |
+| Endpoint / region | `https://s3.eu-central-003.backblazeb2.com` / **`eu-central-003`** (Amsterdam) |
+| `S3_REGION` | the region slug from the endpoint host — **not `auto`**, which is R2-only |
+| Path-style addressing | **Works.** `lib/storage.ts` hardcodes `forcePathStyle: true`; this was the one compatibility unknown and it is now closed. |
+| Presigned PUT/GET | **Work**, including the checksum fix — a real put → get → delete round-trip returned byte-identical data. |
+| CORS | Configured for `http://localhost:3000` and `https://damplatform.vercel.app`; both `PUT` and `GET` verified by real preflight. |
+
+**No application code change was needed for B2** beyond the checksum options already in
+`lib/storage.ts`. The storage layer is genuinely portable, as designed.
+
+*The CORS trap, which cost real time and will cost it again on the next bucket:*
+
+- **B2's web-UI CORS presets are read-only.** "Share everything in this bucket with this
+  one origin" writes a rule allowing **`GET` and `HEAD` only**, with
+  `allowedHeaders: ["authorization", "range"]`. That is built for serving files publicly.
+  This app needs the browser to **`PUT`** (every upload) and to send `content-type`, so
+  the preset can never work no matter which origin is typed into it. It also accepts
+  exactly **one** origin, while the app needs at least localhost plus the deployed domain.
+- **The origin field rejects a trailing slash** — `https://x.vercel.app/` is a URL, not an
+  origin, and B2 answers "an allowedOrigin doesn't look like an origin".
+- **`PutBucketCors` over the S3 API is refused** once native rules exist: *"The bucket
+  contains B2 Native CORS rules. Please use B2 Native API instead."* So custom rules must
+  go through the **B2 Native API** (`b2_authorize_account` → `b2_update_bucket` with a
+  `corsRules` array) or the B2 CLI, not the S3 SDK.
+- The working rule, for reference — `allowedOperations` uses B2's `s3_*` verbs, not HTTP
+  method names:
+  ```json
+  { "corsRuleName": "damAppOrigins",
+    "allowedOrigins": ["http://localhost:3000", "https://damplatform.vercel.app"],
+    "allowedOperations": ["s3_get", "s3_head", "s3_put"],
+    "allowedHeaders": ["*"], "exposeHeaders": ["etag"], "maxAgeSeconds": 3600 }
+  ```
+- **Diagnose with `GetBucketCors`, not by guessing.** Reading back what B2 actually stored
+  is what revealed the preset was `GET`/`HEAD`-only; the browser-side symptom is an opaque
+  403 with no `Access-Control-Allow-Origin` header, identical for every possible cause.
+
+*Considered and rejected 2026-08-31 — **Neon Object Storage** (noticed in the Neon
+console, S3-compatible, and appealing because it would collapse everything to one
+provider and one bill):*
+
+- **It is available in `AWS us-east-2` only.** That is the decisive one. The B2 bucket is
+  already in EU Central, and the whole point of the pending region move is to stop
+  straddling the Atlantic; adopting this would drag the assets back to Ohio.
+- **CORS configuration is not documented anywhere in its overview.** For this app that is
+  not a detail — the browser PUTs every upload and fetches every thumbnail directly from
+  storage. Undocumented-but-mandatory is not a foundation.
+- **Beta**, with "known limitations" in S3 compatibility that the docs do not enumerate,
+  and it rate-limits with `503 SlowDown` expecting client retry logic that
+  `lib/storage.ts` does not have.
+- **5 GB free during the beta only**, then $0.023/GB-month, versus B2's 10 GB free
+  permanently with no card.
+
+Revisit only if it leaves beta with a European region and documented CORS.
+
+*Two things still outstanding on this bucket:*
+
+- **File Lifecycle is "Keep all versions".** That silently defeats the app's *permanent*
+  delete (`DELETE /api/resources/[id]` and the tenant-deletion cleanup both remove stored
+  bytes): B2 keeps the bytes behind a delete marker, so a client asking for their assets to
+  be destroyed would not actually get that. It also accumulates garbage, since
+  `POST /api/resources/[id]/thumbnail?force=true` overwrites the same key on every
+  regeneration. **Change to "Keep only the last version"** — versioning contradicts this
+  app's own stated behaviour rather than protecting it.
+- **The application key is over-privileged.** Its capabilities include `writeBuckets`,
+  `writeBucketEncryption`, `writeBucketReplications` and more. The app only ever needs
+  `listFiles`, `readFiles`, `writeFiles`, `deleteFiles` on this one bucket. Narrow it before
+  the key is pasted into Vercel — it will live there as a long-term secret. (Note that
+  narrowing it removes `writeBuckets`, so change the CORS rules *first*, or keep a separate
+  admin key for that.)
+
+*Data still to migrate:* the local bucket holds **307 objects / 206.5 MB**, of which 277
+keys are referenced by the database, **0 referenced-but-missing**, and 30 orphans. Copy
+with `rclone` under **byte-identical keys** — every `storage_key`, `thumbnail_storage_key`
+and `cover_storage_key` in the database is relative, so nothing needs rewriting. Afterwards
+re-run the reconciliation: all 277 referenced keys must resolve and missing must still be 0.
 
 **3.3 Vercel for the app (decided 2026-08-31, reversing the IIS plan).** IIS was only
 ever chosen because Postgres and MinIO were going to live on that same Windows box.
@@ -276,8 +502,25 @@ self-hosting the database:
 | Every video round-trips to Vercel and back, paid egress twice | **Half gone** — R2 charges zero egress (3.2); what remains is Vercel-side compute, not transfer cost |
 | 250 MB serverless bundle vs. the FFmpeg binary | **Real, and measured** — see below |
 
-Root Directory = `frontend`. **Pro plan is mandatory** — Hobby is non-commercial-use
-only. What remains genuinely Vercel-specific was measured and closed on 2026-08-31:
+Root Directory = `frontend`. **Pro plan is mandatory, and there are now three independent
+reasons rather than one** — the first was known, the other two were hit in practice on
+2026-08-31 while trying to deploy from the Hobby plan:
+
+1. **Licensing.** Hobby is non-commercial-use only.
+2. **Hobby blocks deployments whose commit author is not a project collaborator**, and it
+   does not support collaboration on private repositories at all. The first `dev` push
+   was refused outright: *"The deployment was blocked because the commit author did not
+   have contributing access to the project on Vercel."* The repo is owned by
+   **CoperonDev** while commits were being authored as **JoeYoussef44C** — two of the
+   three GitHub accounts on this machine (see "Version control"). Fixed by setting a
+   **repo-local** git identity (`git config user.email dev@coperon.com`), leaving the
+   global one alone.
+3. **`maxDuration = 300` exceeds Hobby's 60-second ceiling.** The thumbnail route
+   declares 300 (plan 3.3 below); Hobby caps function duration at 60 s and rejects a
+   larger value. Even if 1 and 2 were solved, this route would not deploy — and lowering
+   it to 60 is not a fix, it just moves the failure to the first large video.
+
+What remains genuinely Vercel-specific was measured and closed on 2026-08-31:
 
 - **Function weight.** Only `POST /api/resources/[id]/thumbnail` imports the heavy
   three. Measured from `node_modules`: `pdfjs-dist` 36 MB total (~17 MB actually
@@ -536,6 +779,7 @@ Standalone Node scripts run manually from `frontend/` — not API routes, no boo
 
 | File | Purpose | Status |
 |---|---|---|
+| `scripts/check-env.mjs` | **New 2026-08-31 — environment preflight, the thing to run after pasting a new connection string.** Verifies that whatever `DATABASE_URL` and `S3_*` point at is actually usable: database connects, `pg_trgm`/`pgcrypto` present, tables exist and are not an empty database, row counts against the 136/9/32 baseline, `resources.search_vector` really is a generated column, and the state of the `schema_migrations` ledger. For storage: bucket reachable, credentials accepted, object count and size, plus an optional real put/get/delete round-trip (`--write`) and a **real CORS preflight** (`--origin=https://…`) — the one check that catches R2 denying the browser's cross-origin PUT/GET, which nothing server-side reveals. Knows the two providers: warns on a Neon *direct* endpoint where the app wants `-pooler`, on `sslmode=require` instead of `verify-full`, and on `PG_POOL_MAX` not being 1; fails on an R2 endpoint whose `S3_REGION` is not `auto`. Read-only unless `--write`. Never prints a credential. Point it anywhere for one command: `DATABASE_URL="…" node scripts/check-env.mjs --db`. | Working — run against the live dev environment 2026-08-31, all green except the ledger warning below |
 | `scripts/backfill-covers.mjs` | One-time backfill for `collections.cover_storage_key`. **Widened in Stage 64** — for every collection with no cover, ranks candidates via a single query: a recursive `subtree` CTE (depth-tracked, `$1`-bound) feeding a 4-way `UNION ALL` (priority 0 = own `image/*`, 1 = own resource with `thumbnail_storage_key`, 2 = descendant `image/*`, 3 = descendant thumbnail), `ORDER BY priority ASC, depth ASC, created_at ASC LIMIT 1` — own files still win, then the nearest descendant rather than an arbitrarily deep leaf. Originally (Stage 59) this only ever searched a collection's own member resources; a container collection (holding only sub-collections, no direct files) could never get a cover under that rule, no matter how many images lived underneath it. Still applies the same `AND cover_storage_key IS NULL` conditional UPDATE the live write-sites use, so re-running is safe — a collection already covered (by a live upload or a prior run of this script) is never touched. Prints a summary distinguishing covered-from-own-files / covered-from-a-descendant / no-candidate. Run manually: `node scripts/backfill-covers.mjs`. | ✓ run once against the dev DB (Stage 59) — 25 of 32 collections were coverless; 16 got a cover set from their own files; 9 had no eligible member (all pure containers) and were left alone; an immediate re-run touched 0, confirming idempotency. **Re-run after the Stage 64 widening: those same 9 went to 0 coverless, all 9 covered from a descendant (0 from own files)** — matching a diagnostic query run beforehand that confirmed every remaining coverless collection had zero direct files; a further immediate re-run again touched 0, confirming idempotency still holds |
 | `scripts/regenerate-thumbnails.mjs` (Stage 65) | Bulk force-regeneration for stale video/PDF thumbnails — drives the real `POST /api/resources/[id]/thumbnail?force=true` endpoint over HTTP rather than duplicating any ffmpeg/pdfjs logic. Enumerates video/PDF resources that already have a `thumbnail_storage_key` (optional `--type=pdf`/`--type=video` filter), calls the endpoint sequentially with an admin JWT supplied via the `ADMIN_TOKEN` env var (never written to disk), tolerates per-resource failures (`regenerated`/`skipped` on 400/404/`failed` on other errors) without aborting the batch, prints a running log and a final summary. Run manually: `ADMIN_TOKEN=... node scripts/regenerate-thumbnails.mjs [--type=pdf\|video]`. | ✓ run against the dev DB with `--type=pdf` — 17 PDF resources processed, 0 failed/skipped; independently confirmed to fix a seeded stale (320×452) thumbnail back to a real 800×1132 render |
 | `scripts/migrate-to-companies.mjs` (Stage 84) | Multi-tenancy Stage 1 backfill — populates `companies`/`roles`/`company_collection_access`/`users.company_id`/`users.role_id` from the existing `group_id`/`group_collection_access` data; nothing in the app reads any of it yet. Finds-or-creates a single "Test Company"; maps `role_id` from `group_id` (1→1 super_admin, 2→3 editor, 3→4 viewer, 4→5 pending — role 2 `admin` is never assigned here); sets `company_id` to `NULL` for super admins, Test Company's id for everyone else; copies `group_collection_access` into `company_collection_access` (deduped `SELECT DISTINCT ... ON CONFLICT DO NOTHING`). Every write is guarded (`role_id`/`company_id` only set where still `NULL`; the grants insert is `ON CONFLICT DO NOTHING`). Run manually: `node scripts/migrate-to-companies.mjs`. | ✓ run against the real dev DB — 2 super_admin / 0 admin / 3 editor / 1 viewer / 1 pending (7 users total); `company_collection_access` matched `group_collection_access`'s distinct-collection set exactly (4 collections); a second run confirmed idempotent (all "newly set/inserted" counters 0, identical totals) |
@@ -904,7 +1148,7 @@ today, and local dev is unchanged by leaving them unset):**
 |---|---|---|
 | App (Next.js) | **Vercel, Pro plan** | Root Directory = `frontend`. Pro is mandatory — Hobby is non-commercial use only. |
 | PostgreSQL | **Neon**, pooled (`-pooler`) connection string | Codebase verified transaction-pooler safe (plan 3.1). |
-| Object storage | **Cloudflare R2** | 10 GB free vs. 155 MB in use; zero egress. Config-only swap — `lib/storage.ts` is already env-driven. |
+| Object storage | **Backblaze B2** — bucket `coperon-dam-assets`, EU Central | Chosen over Cloudflare R2 because **R2 requires a payment method even on its free tier** and the team declined to add one. 10 GB free, no card, permanent. Live and verified 2026-08-31 (presigned URLs, path-style, CORS all proven); **206.5 MB / 307 objects still to copy across**. Caveat: B2 free egress is only ~3x stored bytes per month, where R2 was zero — watch it under real traffic. |
 | Transactional email | **A provider (Resend/Postmark), not Gmail SMTP** | Not yet done — see below. |
 | Coperon's Windows server | **No longer in the design** | Nothing is deployed to it. |
 
@@ -940,6 +1184,57 @@ asset into a `Buffer` before writing it out — so **very large videos are the p
 limit of this design**, and that limit should be measured against a real Vercel
 deployment and then written down. It is not a reason to build a queue; if it ever
 becomes one, a DB-backed job table is enough. Redis is not coming back.
+
+### Vercel environment variables (compiled 2026-08-31)
+
+Derived by grepping every `process.env.*` read in `app/`, `lib/` and `components/` — this
+is the complete runtime set, not a recollection. Set these on the **Production**
+environment; Root Directory is `frontend`.
+
+| Var | Value | Notes |
+|---|---|---|
+| `DATABASE_URL` | Neon **pooled** (`-pooler`) string | Rewrite `sslmode=require` → `sslmode=verify-full`. |
+| `PG_POOL_MAX` | `1` | Mandatory on serverless — every warm instance holds its own pool. |
+| `JWT_SECRET` | **a newly generated 32-byte value** | See the warning below. Do **not** copy the current one. |
+| `S3_ENDPOINT` | `https://s3.eu-central-003.backblazeb2.com` | |
+| `S3_REGION` | `eu-central-003` | The slug from the endpoint host. Not `auto` — that is R2-only. |
+| `S3_ACCESS_KEY` | B2 `keyID` | |
+| `S3_SECRET_KEY` | B2 `applicationKey` | |
+| `S3_BUCKET` | `coperon-dam-assets` | |
+| `SMTP_USER` | the Gmail address | Also used as the `From:` on every outbound mail. |
+| `SMTP_PASS` | the Gmail app password | See the transactional-email gap in "Pending decisions". |
+| `APP_URL` | `https://<real deployed domain>` | **No trailing slash.** Drives every share link and the password-reset link. |
+| `SHARE_TOKEN_KEY` | **copied verbatim** from `.env.local` | Confirmed 2026-08-31 to be a valid 44-char base64 / 32-byte key. |
+
+**Deliberately NOT set on Vercel:**
+
+- `NODE_ENV` — Vercel sets it; setting it by hand causes more problems than it solves.
+- `DIRECT_DATABASE_URL` — migrations cannot run on Vercel at all (`migrate.mjs` resolves
+  `../../db/migrations`, and `db/` sits outside the deployed `frontend/` root). It belongs
+  only on whatever machine runs migrations.
+- `PG_IDLE_TIMEOUT_MS`, `PG_CONNECT_TIMEOUT_MS` — defaults are correct; see `lib/db.ts`.
+
+**`JWT_SECRET` must be regenerated, not copied.** Measured 2026-08-31: the live value is
+**12 characters, letters only**, and Phase 1.2 records it as a guessable dictionary-word
+string. It signs HS256 session tokens whose payload carries `canAdmin`/`roleId`, so
+anyone who guesses it mints a super-admin token against the deployed app. Generate 32
+random bytes instead. Rotating it signs every existing session out, which costs nothing
+today and gets expensive after real users exist — this is the cheapest moment it will
+ever have. **This closes half of Phase 1.2.**
+
+**`SHARE_TOKEN_KEY` must be copied exactly, never regenerated.** It AES-encrypts share
+tokens at rest (`lib/crypto.ts`); a new value makes every existing share's Copy-link
+permanently undecryptable. It is the one secret in this table that must not be rotated.
+
+**`APP_URL` is chicken-and-egg.** The real domain is not known until the first deploy, and
+the default falls back to `http://localhost:3000`, which would silently put localhost
+links into real invitation and password-reset emails. Deploy once, read the assigned
+domain, set `APP_URL`, redeploy — and add that same domain to the B2 CORS rule at the same
+time (plan 3.2), since it is needed in both places.
+
+**Scope to Production only, at least initially.** Preview deployments would otherwise
+share the one Neon database and the one B2 bucket, putting real data behind an unstable
+per-commit URL that is in neither the CORS rule nor `APP_URL`.
 
 ### Config that must be right outside local dev, not merely present
 
@@ -1101,7 +1396,7 @@ These are known-pending features — not forgotten, not in progress. **Exception
 - ~~**New user registrations get `company_id: NULL` and are invisible to every read** (Stage 84's gap, made urgent by Stage 86)~~ **Superseded by Stage 91 — the replacement it was waiting for has shipped.** Stage 87's reasoning was that public self-registration would eventually be replaced by invite redemption (which sets `company_id` from the invite), so a stopgap DB default wasn't worth building; Stage 91 is that replacement — the UI no longer offers self-registration at all (`/signup` redirects to `/`), and invitation redemption is now the only UI path to a new account, always with a real `company_id`/`role_id`. ~~**New, narrower open item left by Stage 91 itself:** `POST /api/auth/register` was never disabled server-side, only unlinked from the UI.~~ **Resolved, Stage 105** — the route, the signup page stub, and `lib/users.ts::createUser` are all deleted; no code path creates a user except invite redemption.
 - ~~**`POST /api/collections`'s top-level creation still only writes `group_collection_access`, not `company_collection_access`**~~ **Resolved, Stage 87.** Creation-time grants now write `company_collection_access` (uuid-validated `companyIds`, fail-closed on an unknown id); the home page's create form fetches real companies via the new `GET /api/companies` instead of a hardcoded group list. Confirmed by grep to have been the last runtime writer to `group_collection_access` — nothing in `app/`/`lib/` writes that table anymore (only Stage 84's migration script still reads it). See Stage 87.
 - ~~**Postgres exposed to the public internet** (opened 2026-08-18)~~ **Moot as of 2026-08-31 — the design that caused it is gone.** It was the consequence of self-hosting the database on Coperon's Windows server while the app ran on Vercel; the "managed Postgres" alternative it listed as not-yet-ruled-out is now the chosen path (Neon, plan 3.1), so there is no self-managed socket to expose and no allowlist to fail to write. Nothing is owed here. The same move retires the sibling worries about PgBouncer having no Windows build and Docker Desktop being unfit for an unattended server.
-- **Do asset bytes have to stay on Coperon hardware?** (opened 2026-08-31, and the one open question that can still overturn the hosting plan.) The 2026-08-18 plan asserted it; this file has never recorded a *reason* — no contract, no data-residency clause, just the assertion. If it is real, Cloudflare R2 is out and the path is AIStor Free on Coperon-controlled hardware; if it was only an assumption from when self-hosting looked easier, the Vercel + Neon + R2 plan stands as written. **Answer this before Phase 3 spends money.** Nothing else in the plan is blocked on it.
+- **Do asset bytes have to stay on Coperon hardware?** (opened 2026-08-31, and the one open question that can still overturn the hosting plan.) The 2026-08-18 plan asserted it; this file has never recorded a *reason* — no contract, no data-residency clause, just the assertion. If it is real, Backblaze B2 is out — the bucket already created in Amsterdam would have to be abandoned — and the path is self-hosting on Coperon-controlled hardware (AIStor or Garage, not archived MinIO); if it was only an assumption from when self-hosting looked easier, the Vercel + Neon + B2 plan stands as built. **Answer this before Phase 3 spends money.** Nothing else in the plan is blocked on it.
 - **Transactional email provider** (opened 2026-08-31) — `lib/mail.ts` still sends through Gmail SMTP with an app password (~500/day, and Google flags app-password SMTP from rotating serverless IPs). Moving to Resend/Postmark is a config-only swap on the same `nodemailer` transport. Right on any host; urgent on a serverless one. Not started.
 - **Whether to move the repo into a GitHub organization** (opened 2026-08-18) — `CoperonDev` is a personal account, so access control is one person's account rather than team-managed. GitHub can transfer a repo into an org later without losing history, so this is deferrable, not urgent.
 - **When to rotate the live secrets** (opened 2026-08-18) — see "Security — outstanding". Rotation logs everyone out and needs Docker/Postgres running, so it was deliberately not done mid-session.

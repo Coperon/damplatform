@@ -24,19 +24,33 @@ try {
   // No .env.local (e.g. CI or a server) — rely on the real environment.
 }
 
-if (!process.env.DATABASE_URL) {
-  console.error('DATABASE_URL is not set.');
+// Migrations prefer a direct (non-pooled) endpoint when one is configured.
+// A transaction-mode pooler such as Neon's -pooler host hands each statement
+// whatever backend is free, which is the wrong substrate for a long DDL
+// transaction; the direct endpoint is a real session. Falls back to
+// DATABASE_URL so a plain local Postgres, which has no such split, needs no
+// extra configuration.
+const connectionString = process.env.DIRECT_DATABASE_URL || process.env.DATABASE_URL;
+
+if (!connectionString) {
+  console.error('Neither DIRECT_DATABASE_URL nor DATABASE_URL is set.');
   process.exit(1);
 }
 
+if (process.env.DIRECT_DATABASE_URL) {
+  console.log('Using DIRECT_DATABASE_URL (direct endpoint).');
+} else if (/-pooler\./.test(connectionString)) {
+  console.warn('Warning: DATABASE_URL looks like a pooled endpoint. Set DIRECT_DATABASE_URL to the non-pooled string for migrations.');
+}
+
 const statusOnly = process.argv.includes('--status');
-const pool = new Pool({ connectionString: process.env.DATABASE_URL });
+const pool = new Pool({ connectionString });
 
 const sha256 = (s) => crypto.createHash('sha256').update(s).digest('hex');
 
 async function main() {
   await pool.query(`
-    CREATE TABLE IF NOT EXISTS schema_migrations (
+    CREATE TABLE IF NOT EXISTS public.schema_migrations (
       filename    text PRIMARY KEY,
       checksum    text NOT NULL,
       applied_at  timestamptz NOT NULL DEFAULT now()
@@ -49,7 +63,7 @@ async function main() {
   }
 
   const files = fs.readdirSync(MIGRATIONS_DIR).filter((f) => f.endsWith('.sql')).sort();
-  const { rows } = await pool.query('SELECT filename, checksum FROM schema_migrations');
+  const { rows } = await pool.query('SELECT filename, checksum FROM public.schema_migrations');
   const applied = new Map(rows.map((r) => [r.filename, r.checksum]));
 
   // Drift check before applying anything — a changed file that is already
@@ -83,8 +97,16 @@ async function main() {
     try {
       await client.query('BEGIN');
       await client.query(sql);
+      // A pg_dump-derived migration typically contains
+      //   SELECT pg_catalog.set_config('search_path', '', false);
+      // so that every statement in it is schema-qualified. The `false` makes
+      // that session-wide, not transaction-local, so it is still in force here
+      // and would survive onto the pooled connection after release. Reset it
+      // before the bookkeeping write: this runner's own table is qualified
+      // above, but nothing else should inherit an empty search_path.
+      await client.query('RESET search_path');
       await client.query(
-        'INSERT INTO schema_migrations (filename, checksum) VALUES ($1, $2)',
+        'INSERT INTO public.schema_migrations (filename, checksum) VALUES ($1, $2)',
         [file, sha256(sql)],
       );
       await client.query('COMMIT');
