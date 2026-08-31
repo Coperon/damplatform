@@ -218,8 +218,33 @@ are unthrottled and reachable from the open internet once deployed.
 the Phase 0 session and **never checked**. Everything about the Neon move depends on it
 being right. Postgres is running again, so this is now cheap.
 
-**DONE and PASSED, 2026-08-31.** Verified exactly as prescribed: created a scratch empty
-database in the local container, applied `0001_baseline.sql` to it, and diffed
+**DONE and PASSED, 2026-08-31 — but only on the second attempt, and the first attempt is
+the instructive one.** The initial check applied the baseline with **`psql`**, which
+passed cleanly and proved nothing useful: `psql` is not what applies migrations. Running
+it through the real runner, `scripts/migrate.mjs`, surfaced **two defects that would each
+have blocked the Neon deployment outright**:
+
+1. **`\restrict` / `\unrestrict` on lines 10 and 1088.** PostgreSQL 18's `pg_dump` emits
+   these; they are **psql client meta-commands, not SQL**, so the `pg` driver dies with
+   `syntax error at or near "\"`. Neutralised to comments — they are session directives,
+   never schema.
+2. **`SELECT pg_catalog.set_config('search_path', '', false)` on line 21.** `pg_dump`
+   empties the search path so its own statements are fully schema-qualified. The runner's
+   own `INSERT INTO schema_migrations` was *not* qualified, so it failed with
+   `relation "schema_migrations" does not exist` — the migration applied, then the
+   bookkeeping write failed and rolled the whole thing back. Fixed **in the runner**, not
+   the file, because any future `pg_dump`-derived migration does the same thing:
+   `public.schema_migrations` is now qualified everywhere, and the runner issues
+   `RESET search_path` after each migration so an empty path cannot ride the pooled
+   connection back out (`false` makes `set_config` session-wide, not transaction-local).
+
+**Editing an applied migration would normally be forbidden.** It was legitimate here
+precisely because Phase 2.1's own finding was that this file **had never been applied
+anywhere** — no environment had a `schema_migrations` row for it, so no recorded history
+could disagree with the edit.
+
+Then verified as prescribed: scratch empty database, applied via `scripts/migrate.mjs`,
+and diffed
 `pg_dump --schema-only --no-owner --no-acl --no-comments` of the result against the same
 dump of the live `dam` database.
 
@@ -237,8 +262,51 @@ The scratch database was dropped afterwards; the live one was never touched.
 *Context for why this mattered:* `scripts/check-env.mjs` found the live dev database has
 **no `schema_migrations` table at all** — it was restored from `dam_backup.sql` rather
 than built by migrations, so the ledger and the schema had never agreed and the baseline
-had never executed anywhere. That is now closed: the file is proven both to run and to
-reproduce the real schema exactly. **The Neon load can proceed on it.**
+had never executed anywhere. That is now closed: the file is proven both to run **through
+the real runner** and to reproduce the real schema exactly.
+
+### Neon is now live and seeded (2026-08-31)
+
+**Decision, taken this session: the old data and media are abandoned.** No `pg_dump`
+restore was performed and none is planned — no 136 resources, no 32 collections, no nine
+legacy user rows, and no `dam_backup.sql`. That also disposes of the standing worry that
+`dam_backup.sql`'s bcrypt hashes and shared super-admin test password must never reach
+production: they now simply never do. The local Docker Postgres and MinIO still hold the
+old data and are untouched, should anything need retrieving.
+
+The EU Neon database was built the clean way instead — `node scripts/migrate.mjs`, so the
+schema and the ledger agree **by construction** rather than by a hand-inserted row:
+
+| | |
+|---|---|
+| Schema | 18 tables (17 + `schema_migrations`), applied by the runner |
+| Ledger | `applied  0001_baseline.sql` — honest from the first commit |
+| Reference data | `db/seeds/0001_reference_data.sql` — the five `roles` rows, whose ids are load-bearing |
+| Users | **1** — one super admin. Resources and collections: 0. |
+
+**New: `scripts/seed-admin.mjs`.** Public registration was deleted in Stage 105 and every
+remaining path to a user runs through `POST /api/invitations/redeem`, which needs an
+existing admin to send the invitation — so a fresh database had **no way to bootstrap
+itself**. This script is now the only supported way to create the first account: it
+applies `db/seeds/*.sql`, then inserts a role-1 super admin with no tenant
+(`can_access_all_tenants`, `can_invite`, `status='approved'`), generating a strong
+password when none is given and mirroring `validatePasswordStrength` from `lib/users.ts`.
+`--reset-password` re-points an existing account instead of failing.
+
+**Proven end to end against the real stack, not asserted** — production build, real
+server, real HTTP:
+
+- `POST /api/auth/login` → **200**, and the minted JWT carries `roleId: 1`,
+  `roleName: "super_admin"`, `canAdmin: true`, `tenantId: null`, `canAccessAllTenants: true`.
+- `GET /api/collections` → 200 `[]`.
+- Full upload path: `POST /api/upload/url` → **PUT straight to Backblaze B2** (200) →
+  `POST /api/upload/complete` → **201**.
+- `GET /api/download/[id]` → presigned URL → fetched from B2 → **bytes byte-identical to
+  the original**.
+- `DELETE /api/resources/[id]` → 200, and the object is gone from B2.
+
+Afterwards: **0 resources, 0 objects in the bucket** — the smoke test cleaned up after
+itself. Both halves of the new stack are confirmed working together.
 
 **2.2 Drop three dead tables.** Verified 2026-08-31 against both the live DB and a full
 `app/`+`lib/`+`scripts/` reference sweep — all three have zero rows *and* zero code
