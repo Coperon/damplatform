@@ -218,14 +218,27 @@ are unthrottled and reachable from the open internet once deployed.
 the Phase 0 session and **never checked**. Everything about the Neon move depends on it
 being right. Postgres is running again, so this is now cheap.
 
-**Sharpened 2026-08-31 by `scripts/check-env.mjs`: the live dev database has no
-`schema_migrations` table at all.** The migration runner has therefore never been run
-against it — unsurprising, since the database was restored from `dam_backup.sql` rather
-than built by migrations, but it means the ledger and the schema have *never* agreed and
-the baseline has never executed anywhere. So 2.1 is not merely "diff the file against
-reality"; nothing has ever proven the file can even run. Verify it by applying it to a
-**scratch empty database** and diffing the result against a `pg_dump --schema-only` of
-the live one — do not apply it to the dev database to find out.
+**DONE and PASSED, 2026-08-31.** Verified exactly as prescribed: created a scratch empty
+database in the local container, applied `0001_baseline.sql` to it, and diffed
+`pg_dump --schema-only --no-owner --no-acl --no-comments` of the result against the same
+dump of the live `dam` database.
+
+| | Live `dam` | Baseline-produced |
+|---|---|---|
+| Schema dump | 309 lines | 309 lines |
+| **Diff** | **0 lines — byte-identical** | |
+| Tables / indexes / constraints | 17 / 44 / 131 | 17 / 44 / 131 |
+
+The file also **applies cleanly to an empty database on the first run**, which had never
+been demonstrated before — it is not idempotent on a second run (plain `CREATE TABLE`,
+no `IF NOT EXISTS`), which is correct for a ledger-tracked migration and not a defect.
+The scratch database was dropped afterwards; the live one was never touched.
+
+*Context for why this mattered:* `scripts/check-env.mjs` found the live dev database has
+**no `schema_migrations` table at all** — it was restored from `dam_backup.sql` rather
+than built by migrations, so the ledger and the schema had never agreed and the baseline
+had never executed anywhere. That is now closed: the file is proven both to run and to
+reproduce the real schema exactly. **The Neon load can proceed on it.**
 
 **2.2 Drop three dead tables.** Verified 2026-08-31 against both the live DB and a full
 `app/`+`lib/`+`scripts/` reference sweep — all three have zero rows *and* zero code
@@ -257,8 +270,8 @@ knob added 2026-08-31; see `lib/db.ts`).
 
 | | |
 |---|---|
-| Project / branch | `long-frost-00407846` / `production` |
-| Region | **`us-east-2`** (Ohio) — see the open question below |
+| Project / branch | recreated 2026-08-31, EU; endpoint host `ep-dry-pond-b2k9cl4l` |
+| Region | **`eu-central-1`** (Frankfurt) — the original `us-east-2` project was **deleted and recreated in the EU on 2026-08-31**, while it was still empty and therefore free to move. Now co-located with the B2 bucket in Amsterdam. |
 | Database / role | `neondb` / `neondb_owner` (not a superuser) |
 | Server version | **PostgreSQL 18.6** — *newer* than local 18.4, so a `pg_dump` restores forward with no version problem. The version risk flagged below is **closed, favourably.** |
 | `pg_trgm` / `pgcrypto` | **Available** (v1.6 / v1.4) and `neondb_owner` **is permitted to create them** — proven by running the `CREATE EXTENSION` inside a transaction and rolling back. The baseline will not fail at line 31. |
@@ -273,13 +286,7 @@ were rewritten from Neon's `sslmode=require` to **`sslmode=verify-full`**. The p
 local Docker URL is preserved as a commented line directly beneath them and was
 re-verified to still work, so switching back is one line.
 
-**Open, and cheapest to settle before any data is loaded: the region.** The project is in
-`us-east-2` (Ohio) while the app ships **English and Italian** locales
-(`locales/en.json`, `locales/it.json`). If the beta users are in Europe, every request
-pays a transatlantic round trip — and this app issues several queries per request (auth,
-permission resolution, the recursive tenant access check, then the query itself), so it
-compounds. **A Neon project's region is fixed at creation**; changing it means a new
-project. Raised 2026-08-31, not yet decided.
+**Region: settled 2026-08-31.** The project was originally created in `us-east-2` (Ohio) while the app ships English *and* Italian locales and the B2 bucket sits in EU Central. Because a Neon project’s region is fixed at creation, the project was **deleted and recreated in `eu-central-1`** while it was still empty — the only moment it was free to do so. Database and object storage are now both in Europe, and no request has to cross the Atlantic.
 
 *Check before creating the project — these are unverified and one of them can force
 rework:*
