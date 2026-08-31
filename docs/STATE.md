@@ -373,6 +373,24 @@ this application's actual requirements rather than assumed.
   is what revealed the preset was `GET`/`HEAD`-only; the browser-side symptom is an opaque
   403 with no `Access-Control-Allow-Origin` header, identical for every possible cause.
 
+*Considered and rejected 2026-08-31 — **Neon Object Storage** (noticed in the Neon
+console, S3-compatible, and appealing because it would collapse everything to one
+provider and one bill):*
+
+- **It is available in `AWS us-east-2` only.** That is the decisive one. The B2 bucket is
+  already in EU Central, and the whole point of the pending region move is to stop
+  straddling the Atlantic; adopting this would drag the assets back to Ohio.
+- **CORS configuration is not documented anywhere in its overview.** For this app that is
+  not a detail — the browser PUTs every upload and fetches every thumbnail directly from
+  storage. Undocumented-but-mandatory is not a foundation.
+- **Beta**, with "known limitations" in S3 compatibility that the docs do not enumerate,
+  and it rate-limits with `503 SlowDown` expecting client retry logic that
+  `lib/storage.ts` does not have.
+- **5 GB free during the beta only**, then $0.023/GB-month, versus B2's 10 GB free
+  permanently with no card.
+
+Revisit only if it leaves beta with a European region and documented CORS.
+
 *Two things still outstanding on this bucket:*
 
 - **File Lifecycle is "Keep all versions".** That silently defeats the app's *permanent*
@@ -409,8 +427,25 @@ self-hosting the database:
 | Every video round-trips to Vercel and back, paid egress twice | **Half gone** — R2 charges zero egress (3.2); what remains is Vercel-side compute, not transfer cost |
 | 250 MB serverless bundle vs. the FFmpeg binary | **Real, and measured** — see below |
 
-Root Directory = `frontend`. **Pro plan is mandatory** — Hobby is non-commercial-use
-only. What remains genuinely Vercel-specific was measured and closed on 2026-08-31:
+Root Directory = `frontend`. **Pro plan is mandatory, and there are now three independent
+reasons rather than one** — the first was known, the other two were hit in practice on
+2026-08-31 while trying to deploy from the Hobby plan:
+
+1. **Licensing.** Hobby is non-commercial-use only.
+2. **Hobby blocks deployments whose commit author is not a project collaborator**, and it
+   does not support collaboration on private repositories at all. The first `dev` push
+   was refused outright: *"The deployment was blocked because the commit author did not
+   have contributing access to the project on Vercel."* The repo is owned by
+   **CoperonDev** while commits were being authored as **JoeYoussef44C** — two of the
+   three GitHub accounts on this machine (see "Version control"). Fixed by setting a
+   **repo-local** git identity (`git config user.email dev@coperon.com`), leaving the
+   global one alone.
+3. **`maxDuration = 300` exceeds Hobby's 60-second ceiling.** The thumbnail route
+   declares 300 (plan 3.3 below); Hobby caps function duration at 60 s and rejects a
+   larger value. Even if 1 and 2 were solved, this route would not deploy — and lowering
+   it to 60 is not a fix, it just moves the failure to the first large video.
+
+What remains genuinely Vercel-specific was measured and closed on 2026-08-31:
 
 - **Function weight.** Only `POST /api/resources/[id]/thumbnail` imports the heavy
   three. Measured from `node_modules`: `pdfjs-dist` 36 MB total (~17 MB actually
