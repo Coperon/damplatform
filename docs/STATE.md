@@ -1075,6 +1075,57 @@ limit of this design**, and that limit should be measured against a real Vercel
 deployment and then written down. It is not a reason to build a queue; if it ever
 becomes one, a DB-backed job table is enough. Redis is not coming back.
 
+### Vercel environment variables (compiled 2026-08-31)
+
+Derived by grepping every `process.env.*` read in `app/`, `lib/` and `components/` — this
+is the complete runtime set, not a recollection. Set these on the **Production**
+environment; Root Directory is `frontend`.
+
+| Var | Value | Notes |
+|---|---|---|
+| `DATABASE_URL` | Neon **pooled** (`-pooler`) string | Rewrite `sslmode=require` → `sslmode=verify-full`. |
+| `PG_POOL_MAX` | `1` | Mandatory on serverless — every warm instance holds its own pool. |
+| `JWT_SECRET` | **a newly generated 32-byte value** | See the warning below. Do **not** copy the current one. |
+| `S3_ENDPOINT` | `https://s3.eu-central-003.backblazeb2.com` | |
+| `S3_REGION` | `eu-central-003` | The slug from the endpoint host. Not `auto` — that is R2-only. |
+| `S3_ACCESS_KEY` | B2 `keyID` | |
+| `S3_SECRET_KEY` | B2 `applicationKey` | |
+| `S3_BUCKET` | `coperon-dam-assets` | |
+| `SMTP_USER` | the Gmail address | Also used as the `From:` on every outbound mail. |
+| `SMTP_PASS` | the Gmail app password | See the transactional-email gap in "Pending decisions". |
+| `APP_URL` | `https://<real deployed domain>` | **No trailing slash.** Drives every share link and the password-reset link. |
+| `SHARE_TOKEN_KEY` | **copied verbatim** from `.env.local` | Confirmed 2026-08-31 to be a valid 44-char base64 / 32-byte key. |
+
+**Deliberately NOT set on Vercel:**
+
+- `NODE_ENV` — Vercel sets it; setting it by hand causes more problems than it solves.
+- `DIRECT_DATABASE_URL` — migrations cannot run on Vercel at all (`migrate.mjs` resolves
+  `../../db/migrations`, and `db/` sits outside the deployed `frontend/` root). It belongs
+  only on whatever machine runs migrations.
+- `PG_IDLE_TIMEOUT_MS`, `PG_CONNECT_TIMEOUT_MS` — defaults are correct; see `lib/db.ts`.
+
+**`JWT_SECRET` must be regenerated, not copied.** Measured 2026-08-31: the live value is
+**12 characters, letters only**, and Phase 1.2 records it as a guessable dictionary-word
+string. It signs HS256 session tokens whose payload carries `canAdmin`/`roleId`, so
+anyone who guesses it mints a super-admin token against the deployed app. Generate 32
+random bytes instead. Rotating it signs every existing session out, which costs nothing
+today and gets expensive after real users exist — this is the cheapest moment it will
+ever have. **This closes half of Phase 1.2.**
+
+**`SHARE_TOKEN_KEY` must be copied exactly, never regenerated.** It AES-encrypts share
+tokens at rest (`lib/crypto.ts`); a new value makes every existing share's Copy-link
+permanently undecryptable. It is the one secret in this table that must not be rotated.
+
+**`APP_URL` is chicken-and-egg.** The real domain is not known until the first deploy, and
+the default falls back to `http://localhost:3000`, which would silently put localhost
+links into real invitation and password-reset emails. Deploy once, read the assigned
+domain, set `APP_URL`, redeploy — and add that same domain to the B2 CORS rule at the same
+time (plan 3.2), since it is needed in both places.
+
+**Scope to Production only, at least initially.** Preview deployments would otherwise
+share the one Neon database and the one B2 bucket, putting real data behind an unstable
+per-commit URL that is in neither the CORS rule nor `APP_URL`.
+
 ### Config that must be right outside local dev, not merely present
 
 
