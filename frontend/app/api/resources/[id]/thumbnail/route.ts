@@ -13,6 +13,21 @@ import { canAccessAllTenants } from '@/lib/session';
 import { getObject, putObject } from '@/lib/storage';
 import { tenantHasResourceAccess, requirePermission } from '@/lib/permissions';
 
+// The heaviest route in the app, and the only one that spawns a subprocess.
+// A single request can pull a whole video out of object storage into memory,
+// write it to a temp file, run FFmpeg over it, and upload the frame back —
+// comfortably past any serverless platform's default timeout, which is
+// typically 10-15s. 300 is Vercel's Pro ceiling for a standard serverless
+// function; a Hobby deployment caps at 60 and will reject this at deploy
+// time, which is the intended signal, since Hobby is non-commercial anyway.
+// Self-hosted behind IIS this export is inert — ARR's own 30s response
+// timeout governs there instead and has to be raised separately.
+//
+// Note this is a ceiling, not a budget: the FFmpeg and PDF render steps below
+// keep their own tighter internal timeouts, so a hung subprocess still fails
+// fast rather than holding the function open for the full 300s.
+export const maxDuration = 300;
+
 const FFMPEG_TIMEOUT_MS = 20_000;
 const THUMBNAIL_WIDTH = 320;
 const SEEK_SECONDS = 1;

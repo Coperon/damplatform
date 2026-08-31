@@ -31,13 +31,13 @@ bcrypt hashes), `minio_backup.tar.gz` (155 MB, over GitHub's file limit),
 
 | Layer | Location | Status |
 |---|---|---|
-| Frontend + API routes | `frontend/` (Next.js 16.2.9, App Router) | Active — all core routes live and tested |
-| Schema migrations | `db/migrations/`, runner at `frontend/scripts/migrate.mjs` | New 2026-08-18 — baseline needs verifying against the live DB |
-| Database | PostgreSQL 18 **in Docker**, host port **5433** | Live, fully seeded |
-| Object storage | MinIO in Docker | Running, wired to upload/download routes |
+| Frontend + API routes | `frontend/` (Next.js 16.2.9, App Router) | Active — build + prod server re-verified 2026-08-31 |
+| Schema migrations | `db/migrations/`, runner at `frontend/scripts/migrate.mjs` | New 2026-08-18 — **baseline still unverified** against the live DB (plan 2.1) |
+| Database | PostgreSQL 18 **in Docker**, host port **5433** | Live, fully seeded — 136 resources / 9 users / 32 collections |
+| Object storage | MinIO in Docker, pinned `RELEASE.2025-09-07` | Running — but **MinIO was archived 25 Apr 2026** and is unmaintained; move off it before beta (plan 3.2) |
 | Legacy NestJS backend | Archived outside the repo | Removed from the tree 2026-08-18 |
-| Redis / BullMQ | In `docker-compose.yml`, unused by code | Candidate queue for the planned media worker |
-| Worker process | Not built | Planned — see Deployment notes |
+| Redis / BullMQ | In `docker-compose.yml`, unused by code | Not needed — a DB-backed job table would do if a queue is ever wanted |
+| Worker process | Not built | Media processing runs in-request; acceptable on a single server |
 
 **Directory layout changed 2026-08-18.** The tree was flattened from
 `Coperon/damplatform/damplatform/frontend` to `Coperon/damplatform/frontend`.
@@ -104,22 +104,240 @@ user — including a role-5 *pending* user with no collection access at all — 
 object in the bucket. Keys are `uploads/<timestamp>-<filename>` and leak through list
 responses. This bypasses the entire tenant cascade the rest of the codebase is built on.
 Fix: accept a resource/collection id and run the same check as `GET /api/download/[id]`.
+**Scoped 2026-08-31 — the whole route is 21 lines and there are exactly 6 call sites in
+two shapes; see plan 1.1 for the id-based replacement and the file/line list.**
 
-**3. The tenant access-check CTE is duplicated across ~14 route files** even though
+**3. The tenant access-check CTE is duplicated across route files** even though
 `tenantHasResourceAccess` / `tenantHasCollectionAccess` already exist in
-`lib/permissions.ts`. Any access-control fix has to land 14 times, and one miss is a
-cross-client data leak. Highest-value refactor in the codebase.
+`lib/permissions.ts`. Any access-control fix has to land in every copy, and one miss is
+a cross-client data leak. Highest-value refactor in the codebase. **Measured
+2026-08-31: 16 files, and the copies have drifted into at least 3 different shapes,
+while the lib helpers are used by only a handful of routes — two sources of truth.**
+See plan 4.2.
 
-**4. The JWT lives in `localStorage`**, hand-read at ~100 call sites. Any XSS is full
+**4. The JWT lives in `localStorage`**, hand-read at **88** call sites (measured
+2026-08-31; 141 raw `fetch()` calls total, no shared API client). Any XSS is full
 account takeover. Should be an httpOnly + Secure + SameSite cookie behind a
-`middleware.ts` gate — there is no middleware at all today.
+`middleware.ts` gate — there is no middleware at all today. Note this is *caused* by the
+all-client-side frontend (19/19 pages are `"use client"`): the token must be reachable
+from client JS. See plan 4.1 and 4.3 — fix the API client first, or the cookie
+migration means editing 88 sites.
 
 **5. No rate limiting anywhere** — login, forgot-password, invite redeem, and public
-share tokens are all unthrottled.
+share tokens are all unthrottled. Confirmed by grep 2026-08-31: no rate-limit code
+exists. See plan 1.3.
 
 **6. No index on `collections(parent_id)`**, which every recursive access check walks.
+Confirmed 2026-08-31 — `collections` carries only `collections_pkey`. See plan 2.3.
 
 **7. No tests, no CI, no staging environment.** Every stage to date was verified by hand.
+
+---
+
+## Deployment readiness plan (opened 2026-08-31)
+
+Goal: get the app onto Coperon's Windows server as a beta, on Neon + hosted object
+storage, without shipping the known security holes. Work in phase order — each phase
+is independently shippable, and Phases 1–2 are deliberately cheap because they are
+easier to do now, while the only data at risk is test data.
+
+**Already landed (2026-08-31, second session) — the Vercel-readiness code changes.**
+Hosting was re-decided (Vercel + Neon + R2; see "Target hosting" and plan 3.3) and the
+four things that would have broken a Vercel deploy are fixed, `tsc --noEmit` and
+`next build` both clean:
+
+| Change | File | Why it was a blocker |
+|---|---|---|
+| `outputFileTracingIncludes` for ffmpeg/canvas/pdfjs | `next.config.ts` | Their binaries and data files were untraced, so they'd be **absent from the deployed function while the build still succeeded** — a production-only ENOENT. Verified present in the built `.nft.json`. |
+| `maxDuration` — 300 s thumbnail, 60 s both upload routes | 3 route files | No route declared one; a serverless default of 10–15 s kills every video thumbnail. |
+| Bounded, env-configurable pool (`PG_POOL_MAX`, default 10) | `lib/db.ts` | Unbounded pool × N warm instances exhausts Postgres. |
+| **Pool deadlock in both upload routes** | `upload/complete`, `upload/from-url` | Post-`COMMIT` pool work ran while the transaction client was still held — a permanent hang at a small pool. Found while sizing the pool, not suspected beforehand. See "Conventions that bite". |
+
+Verified live, not merely compiled: a real upload (`/api/upload/url` → presigned PUT →
+`/api/upload/complete`) returned **201 in 203 ms with `PG_POOL_MAX=1`**, where the
+pre-fix code hangs forever — the old and new shapes were also reproduced side by side
+against the live DB at `max: 1` (old: hung; new: completed). Test resource deleted; DB
+back to its 136-resource baseline. **Phases 1 and 2 are untouched and still block a
+real deployment.**
+
+**Runtime status confirmed 2026-08-31** (re-verified live, not assumed): `next build`
+exits 0, `next start` serves in 643 ms, login mints a correct JWT, `GET /api/collections`
+returns 6, and `GET /api/download/[id]` → presigned URL → 177,271 real bytes of JPEG.
+The restored dataset is intact (136 resources / 9 users / 32 collections). The app is
+runnable and buildable as-is; nothing below is blocking *running* it, only *deploying*
+it to real users.
+
+### Phase 1 — Security blockers (must land before any real user)
+
+**1.1 Fix the `GET /api/cover` IDOR.** The route is 21 lines: `requireAuth`, then it
+presigns whatever `?key=` the client sent. Any authenticated user — including a role-5
+*pending* account with zero collection access — can read any object in the bucket.
+The fix is scoped and known: **stop accepting a storage key from the client; accept an
+id and look the key up server-side.** There are exactly **6 real call sites** in two
+shapes, so the route needs two:
+
+| New shape | Anchor | Look up | Callers |
+|---|---|---|---|
+| `?collectionId=<uuid>` | collection | `collections.cover_storage_key` | `app/home/page.tsx:280`, `app/collections/[id]/page.tsx:646` |
+| `?resourceId=<uuid>` | resource | `resources.thumbnail_storage_key` | `app/admin/media/page.tsx:362,644`, `app/collections/[id]/page.tsx:682,1535`, `app/resources/[id]/metadata/page.tsx:194` |
+
+Gate each with the existing `tenantHasCollectionAccess` / `tenantHasResourceAccess`
+helpers in `lib/permissions.ts` — do not hand-roll another CTE here (see 4.2).
+
+**1.2 Rotate the live secrets.** `JWT_SECRET` is a short guessable dictionary word;
+anyone who guesses it mints a super-admin token. Rotate it, the Postgres password, and
+the MinIO/storage credentials. **Never rotate `SHARE_TOKEN_KEY`** — that permanently
+breaks every existing share link. The SMTP app password can only be reissued by the
+user, via Google. Rotating `JWT_SECRET` signs everyone out, which is free right now and
+expensive later — that is the argument for doing it in this phase.
+
+**1.3 Add rate limiting** to `POST /api/auth/login`, `POST /api/auth/forgot-password`,
+`POST /api/invitations/redeem`, and the public `GET /api/share/[token]` routes. All four
+are unthrottled and reachable from the open internet once deployed.
+
+### Phase 2 — Schema hygiene (one migration, ~30 minutes)
+
+**2.1 Verify `db/migrations/0001_baseline.sql` against the live database.** Written in
+the Phase 0 session and **never checked**. Everything about the Neon move depends on it
+being right. Postgres is running again, so this is now cheap.
+
+**2.2 Drop three dead tables.** Verified 2026-08-31 against both the live DB and a full
+`app/`+`lib/`+`scripts/` reference sweep — all three have zero rows *and* zero code
+references:
+
+| Table | Rows | Code refs | Superseded by |
+|---|---|---|---|
+| `resource_types` | 0 | **0** | nothing — and 0 of 136 resources have `resource_type_id` set |
+| `renditions` | 0 | **0** (1 comment only) | `resources.thumbnail_storage_key` (134/136 populated) |
+| `audit_log` | 0 | **0** | `access_log` (Stage 96) |
+
+Drop `resources.resource_type_id` with `resource_types`, FK first. Append-only: this is
+a new migration file, never an edit to 0001.
+
+**2.3 Add the missing index:** `CREATE INDEX ON collections(parent_id);` — every
+recursive access check in the app walks that column and only the PK exists today.
+
+### Phase 3 — Infrastructure move
+
+**3.1 Neon.** Create the project, apply migrations with `node scripts/migrate.mjs`,
+load the data. **Use the pooled (`-pooler`) connection string** — verified 2026-08-31
+that the codebase is transaction-mode-pooler safe: every transaction takes a dedicated
+client via `db.connect()` before `BEGIN`, and there is no `LISTEN`/`NOTIFY`, no
+session-scoped `SET`, and no SQL-level `PREPARE` anywhere. Free tier compute suspends
+after 5 min idle (cold start on the next request) — acceptable for beta.
+
+**3.2 Object storage — moving off MinIO.** **MinIO was archived 25 April 2026**; the
+repo is read-only, MinIO Inc. stopped development in Feb 2026, and the community edition
+is source-only with no precompiled binaries. The local container is pinned to a 2025
+release that will receive no security updates. Fine for dev, wrong foundation for a
+beta holding client assets. **Recommended: Cloudflare R2** — 10 GB free (current usage
+155 MB), zero egress, which matters more than Backblaze B2's cheaper per-GB storage
+because a DAM's whole job is serving files. Migration is config-only (`lib/storage.ts`
+already reads endpoint/creds/bucket from env); copy objects with `rclone`, keep the
+keys identical so every existing `storage_key` still resolves.
+**Expect one incompatibility:** since v3.729.0 the AWS SDK sends a CRC32 checksum on
+every upload by default and several S3-compatible providers reject it. `package.json`
+pins `^3.1075.0` and the behaviour is live (presigned URLs carry
+`x-amz-checksum-mode=ENABLED`). If uploads fail with `InvalidArgument` / unsupported
+header, set `requestChecksumCalculation: "WHEN_REQUIRED"` and
+`responseChecksumValidation: "WHEN_REQUIRED"` on the `S3Client`.
+If asset bytes must stay on Coperon hardware for a contractual or data-residency
+reason — this file records the intent but never a reason — then R2 is out and the path
+is AIStor Free (MinIO's successor), not archived MinIO. **Settle this explicitly.**
+
+**3.3 Vercel for the app (decided 2026-08-31, reversing the IIS plan).** IIS was only
+ever chosen because Postgres and MinIO were going to live on that same Windows box.
+Once 3.1 and 3.2 move both off it, the server's only remaining job is running Node —
+and every objection recorded against Vercel on 2026-08-18 was a consequence of
+self-hosting the database:
+
+| 2026-08-18 objection | Status now |
+|---|---|
+| No PgBouncer build for Windows | **Gone** — Neon pools server-side (3.1) |
+| Docker Desktop unfit for an unattended server | **Gone** — no containers to run |
+| Postgres must be exposed to the public internet, no IP allowlist possible | **Gone** — Neon is not our socket to expose |
+| Every video round-trips to Vercel and back, paid egress twice | **Half gone** — R2 charges zero egress (3.2); what remains is Vercel-side compute, not transfer cost |
+| 250 MB serverless bundle vs. the FFmpeg binary | **Real, and measured** — see below |
+
+Root Directory = `frontend`. **Pro plan is mandatory** — Hobby is non-commercial-use
+only. What remains genuinely Vercel-specific was measured and closed on 2026-08-31:
+
+- **Function weight.** Only `POST /api/resources/[id]/thumbnail` imports the heavy
+  three. Measured from `node_modules`: `pdfjs-dist` 36 MB total (~17 MB actually
+  needed), `@napi-rs/canvas` 36 MB (27 MB Skia + 10 MB `icudtl.dat`, in a *per-platform*
+  package — the parent is a 152 KB shim), and `ffmpeg-static` **18 MB on Windows but
+  ~78 MB on Linux**. So the thumbnail function lands ≈130–140 MB against the 250 MB
+  uncompressed limit: it fits, with less headroom than the Windows numbers suggest.
+  **Always measure this on Linux, never locally.**
+- **File tracing, the trap.** `serverExternalPackages` stops these three being bundled
+  but does **not** make them ship. Next decides a function's files by following
+  `require()` graphs, and all three reach their payload by a *computed path* instead —
+  so untraced they are absent from the deployment, the build still succeeds, and the
+  route fails in production. Closed by `outputFileTracingIncludes` in `next.config.ts`.
+- **`maxDuration`.** No route declared one. Now set: 300 s on the thumbnail route
+  (Vercel Pro's ceiling; Hobby caps at 60 and will reject it at deploy time), 60 s on
+  both upload routes.
+- **Pool size.** `lib/db.ts` created an unbounded pool; on Vercel every warm instance
+  holds its own. Now `PG_POOL_MAX` (default 10, set **1** on Vercel).
+
+Still true and unchanged by the host: browser uploads go straight to object storage via
+presigned URL and never traverse the app, so no platform request-size limit is the
+upload ceiling — it only constrains the server-side Import-from-URL path (itself capped
+at 15 MB in code).
+
+**If Vercel is ever abandoned, IIS remains viable** and its notes are worth keeping:
+one site, one application pool set to "No Managed Code"; no Web Gardens (each extra
+worker opens its own DB pool); idle time-out and recycling off so IIS does not fight the
+process manager; Node 22 LTS + URL Rewrite 2.1 + ARR 3.0 (**proxy is off by default and
+must be enabled after install**) + a service manager (NSSM/PM2/node-windows) + a TLS
+cert bound in IIS; **not** iisnode (unmaintained). The gotcha there: ARR's default
+response time-out is **30 s** and thumbnail generation can exceed it — raise it to 120 s
+or users get a 502 mid-job. The `maxDuration` exports above are inert under IIS.
+
+**3.4 Operational minimums, none of which exist today:** a health endpoint (there is no
+`/api/health`), real error logging (19 bare `console.error` calls, no logging or
+monitoring dependency), and a backup story for both Neon and the object store.
+
+### Phase 4 — Architectural seam (after beta is up, before more features)
+
+The architecture is sound and needs **no restructuring** — single full-stack app, raw
+parameterized SQL, fixed-admin/configurable-editor permission model, portable storage
+layer. But there is **no seam between the route handlers and the database**, and that
+missing seam is what makes the Phase 1 security work harder than it should be. Fix the
+seam and everything after it gets cheaper.
+
+**4.1 Add `lib/apiClient.ts`.** The frontend is 100% client-side: 19/19 pages are
+`"use client"`, with **88** hand-rolled `localStorage.getItem("token")` reads and **141**
+raw `fetch()` calls and no shared client. This is *why* the token has to live in
+`localStorage` — it is read by client JS at 88 sites. One API-client module collapses
+that to a single place and turns the later httpOnly-cookie migration into a one-file
+change. Highest leverage-to-risk ratio in the codebase.
+
+**4.2 Consolidate the tenant access check.** `WITH RECURSIVE` appears in **16 route
+files** and the copies have **drifted into at least three different shapes** —
+resource-anchored (`download`, `resources/[id]/metadata`), collection-anchored
+(`collections/[id]/files`), and an all-collections root mapping (`search`) — while
+`tenantHasCollectionAccess`/`tenantHasResourceAccess` exist in `lib/permissions.ts` and
+are used by only a handful of routes. The single most security-critical rule in the
+system therefore has **two sources of truth and three implementations**. That is the
+mechanism by which a cross-tenant leak eventually ships. Target: three helpers
+(resource-anchored, collection-anchored, subtree-mapping), all 16 sites migrated.
+Related measurement: **201 of 229** `db.query`/`client.query` calls live in
+`app/api/`, only 28 in `lib/`.
+
+**4.3 Then** httpOnly + Secure + SameSite cookie behind a `middleware.ts` gate (there is
+no middleware at all today), and only after that consider moving read-heavy pages to
+Server Components.
+
+**4.4 Decompose the large components** — `app/collections/[id]/page.tsx` is 3,120 lines
+(then `admin/media` 1,791, `admin/users` 1,038). Not urgent, but it is the page both
+editors and viewers use most, so it is where changes are riskiest.
+
+**Deliberately not scheduled:** a job queue for media processing.
+`POST /api/resources/[id]/thumbnail` pulls the whole file into a `Buffer` and spawns
+FFmpeg in-request — survivable on a single server (FFmpeg is a subprocess, so the event
+loop is not blocked) but it spikes memory on large videos. If it ever becomes a problem,
+a DB-backed job table is enough; there is no need to bring Redis back.
 
 ---
 
@@ -274,7 +492,7 @@ share tokens are all unthrottled.
 | File | Exports |
 |---|---|
 | `lib/errors.ts` | `AppError(status, message)` |
-| `lib/db.ts` | default `db` (pg Pool singleton, survives hot reload via `global._pgPool`) |
+| `lib/db.ts` | default `db` (pg Pool singleton, survives hot reload via `global._pgPool`). **2026-08-31:** pool size and both timeouts are now configuration, not constants — `PG_POOL_MAX` (default 10, floor 1), `PG_IDLE_TIMEOUT_MS`, `PG_CONNECT_TIMEOUT_MS`, all read through a local `envInt()` that honours an explicit `0`. Defaults reproduce the previous behaviour except that waiting for a connection is now bounded rather than infinite. Set `PG_POOL_MAX=1` on serverless — and read the deadlock note in "Conventions that bite" before doing so. |
 | `lib/session.ts` | `requireAuth`, `requireAdmin` (role 1 or 2 — `canAdmin`, which both tiers carry as of Stage 89), `requireSuperAdmin` (role 1 only, Stage 89), `isSuperAdmin(payload)` (`roleId === 1`), `requireUpload`, `requireDownload`. **Stage 106:** `isInternal(payload)` (renamed `canAccessAllTenants(payload)` at Stage 110 — see that stage; row wording below quotes the Stage 106 build, current name is `canAccessAllTenants`) — role 1 hardcoded-true, else the token's `canAccessAllTenants` claim (was `isInternal`); the bypass primitive every tenant-scoped target-access check now calls instead of `isSuperAdmin` — and `actingTenantId(payload, request)` — resolves the tenant a cross-tenant-access user is acting as from the `dam_acting_tenant` cookie (honored only for cross-tenant-access callers, silently ignored otherwise; falls back to the caller's own tenantId), used by every tenant-scoped *list* route. **Stage 109:** `canInvite(payload)` — role 1 hardcoded-true, else the token's `canInvite` claim; same shape as `canAccessAllTenants`, used by `POST /api/invitations` in place of the old blanket "cross-tenant admins can't invite" block. **Stage 110:** `isInternal` → `canAccessAllTenants`, pure rename, zero behavior change — see the Stage 110 terminology note near the JWT contract below |
 | `lib/users.ts` | `validatePasswordStrength`, `findByEmail`, `updatePassword` — **`createUser` deleted in Stage 105** along with `POST /api/auth/register` (its only caller); the only user-creating code path left anywhere is `POST /api/invitations/redeem`'s own INSERT. **Stage 109:** `findByEmail` also selects `u.can_invite`, feeding the JWT mint (see `lib/auth.ts`) |
 | `lib/auth.ts` | `login`, `changePassword`, `forgotPassword`, `resetPassword`; **Stage 112:** `mintSessionToken(user)` extracted from `login()`'s payload-building/`jwt.sign` call — the single JWT-minting path, same `findByEmail`-shaped input, reused by `POST /api/invitations/redeem` so a redeemed user's session can never drift from a normal login's claims |
@@ -646,6 +864,15 @@ APP_URL=http://localhost:3000
 SHARE_TOKEN_KEY=<base64, 32 bytes decoded>
 ```
 
+**Optional pool tuning (added 2026-08-31, all with working defaults — absent everywhere
+today, and local dev is unchanged by leaving them unset):**
+
+| Var | Default | Set it when |
+|---|---|---|
+| `PG_POOL_MAX` | `10` (pg's own) | **`1` on Vercel.** Every warm serverless instance holds its own pool against the same database; unbounded × N instances is how a serverless deploy exhausts Postgres. Floor is 1 — a smaller value is clamped up. |
+| `PG_IDLE_TIMEOUT_MS` | `10000` | Rarely. A frozen serverless instance's idle sockets get reaped underneath it; discarding them first means the pool never hands out a dead one. |
+| `PG_CONNECT_TIMEOUT_MS` | `10000` | Rarely. Bounds the wait for a free connection instead of hanging forever (pg's default). `0` restores wait-forever. |
+
 `APP_URL` drives the password-reset link (`lib/auth.ts`) and every generated share link (`POST /api/shares`); it's read fresh from the env var on every request, never derived from the incoming request's own host/port. **Stage 68:** this had drifted to `:3001` in this dev environment while the server actually runs on `:3000` — corrected; kept in sync from here on. Change to the production domain at deploy time — see "Deployment notes" below.
 
 `SHARE_TOKEN_KEY` (Stage 72) is a base64-encoded 32-byte AES-256 key, used by `lib/crypto.ts` to encrypt share tokens at rest for admin retrieval (`POST /api/shares`, `GET /api/shares/[id]/link`) — required in any environment that creates or reads shares; missing or wrong-length fails clearly (thrown error), not silently. Losing or rotating it makes existing shares' `token_encrypted` permanently undecryptable (Copy-link breaks for those rows; the hash-validated public link is unaffected either way).
@@ -654,34 +881,48 @@ SHARE_TOKEN_KEY=<base64, 32 bytes decoded>
 
 ## Deployment notes
 
-### Target hosting (decided 2026-08-18)
+### Target hosting (decided 2026-08-31 — supersedes the 2026-08-18 plan)
 
 | Tier | Where | Notes |
 |---|---|---|
-| App (Next.js) | **Vercel** | Requires the **Pro** plan — Hobby is non-commercial use only. Root Directory = `frontend`. |
-| Media (MinIO) + media worker | **Coperon's own Windows server** | Asset bytes stay on Coperon infrastructure. |
-| PostgreSQL | **Self-hosted on that same Windows server** | Deliberately not managed. |
+| App (Next.js) | **Vercel, Pro plan** | Root Directory = `frontend`. Pro is mandatory — Hobby is non-commercial use only. |
+| PostgreSQL | **Neon**, pooled (`-pooler`) connection string | Codebase verified transaction-pooler safe (plan 3.1). |
+| Object storage | **Cloudflare R2** | 10 GB free vs. 155 MB in use; zero egress. Config-only swap — `lib/storage.ts` is already env-driven. |
+| Transactional email | **A provider (Resend/Postmark), not Gmail SMTP** | Not yet done — see below. |
+| Coperon's Windows server | **No longer in the design** | Nothing is deployed to it. |
 
-**The heavy media pipeline must move off Vercel.** `POST /api/resources/[id]/thumbnail`
-spawns `ffmpeg-static` (~78 MB binary), renders PDFs via `pdfjs-dist`, and rasterizes
-with the native `@napi-rs/canvas`. Against Vercel's limits (250 MB uncompressed bundle,
-500 MB `/tmp`, 2 GB memory) that is tight at best, and every video would travel from the
-server to Vercel and back — paid egress, twice. Plan: a worker colocated with MinIO,
-with Next.js enqueuing jobs. It runs fine on Windows; the dev box already proves it.
+**What this replaces.** The 2026-08-18 plan put the app on Vercel but kept Postgres and
+MinIO on Coperon's own Windows server, and recorded three open problems as a result: no
+PgBouncer build for Windows, Docker Desktop being a poor fit for an unattended server,
+and Postgres having to be exposed to the public internet with no IP allowlist possible
+(Vercel's Pro egress IPs are dynamic) — that last one flagged as "the weakest joint in
+the chosen design," never accepted or rejected. **Moving the database to Neon dissolves
+all three at once**, and moving object storage to R2 (forced anyway by MinIO's
+archival — plan 3.2) removes the "paid egress on every video round-trip" objection.
+The Windows server then has no remaining job, which is why IIS is out; its setup notes
+are preserved under plan 3.3 in case that reverses.
 
-**Three consequences of the Windows + self-hosted choice, all still open:**
+**The one thing that could still overturn this:** the old plan asserted asset bytes must
+stay on Coperon infrastructure. **This file has never recorded a reason** — no contract,
+no data-residency clause, just the assertion. If a real requirement exists, R2 is out
+and so is most of this table, and the storage path becomes AIStor Free (MinIO's
+successor) on hardware Coperon controls. **Settle this explicitly before Phase 3 spends
+any money.** Everything else above is configuration.
 
-1. **PgBouncer has no Windows build.** Serverless pooling needs another shape — a pooler
-   in WSL2/Docker, or a tightly bounded `pg.Pool` against a raised `max_connections`.
-   `lib/db.ts` currently creates an **unbounded** pool, which will exhaust Postgres on
-   Vercel where every warm instance holds its own.
-2. **Docker Desktop is a poor fit for an unattended Windows server** — it wants an
-   interactive login session. Prefer native Windows services for Postgres, MinIO, and Caddy.
-3. **Postgres would have to be exposed to the public internet** for Vercel to reach it,
-   and Vercel's egress IPs are dynamic on Pro, so no IP allowlist is possible. This is the
-   weakest joint in the chosen design. Mitigations are TLS (`sslmode=verify-full`),
-   `scram-sha-256`, an app-only role, and a non-default port — all weaker than a private
-   network. **Not yet accepted or rejected by the team.**
+**Email is an open gap, not a decision.** `lib/mail.ts` sends password-reset,
+invitation, and email-change mail through Gmail SMTP with an app password. That is
+roughly 500 sends/day, and Google is prone to flagging app-password SMTP arriving from
+rotating serverless IPs. A transactional provider is the right answer on any host — the
+same `nodemailer` transport, a config-only swap — but serverless makes it urgent rather
+than merely advisable. Nothing has been changed here yet.
+
+**Media processing needs no worker and no queue.** `POST /api/resources/[id]/thumbnail`
+spawns FFmpeg in-request. On Vercel that is bounded by `maxDuration = 300` (Pro's
+ceiling) and by the function's memory and ~512 MB `/tmp`, and the route pulls the whole
+asset into a `Buffer` before writing it out — so **very large videos are the practical
+limit of this design**, and that limit should be measured against a real Vercel
+deployment and then written down. It is not a reason to build a queue; if it ever
+becomes one, a DB-backed job table is enough. Redis is not coming back.
 
 ### Config that must be right outside local dev, not merely present
 
@@ -719,8 +960,31 @@ Both password flows are built and confirmed working:
 ## Conventions that bite if forgotten
 
 - `ctx.params` in Next.js 16 route handlers is **async** — always `const { id } = await ctx.params`.
+- **Never issue a pool query while holding a transaction client.** `db.connect()` checks
+  a connection out of the pool; `db.query()` asks for a *different* one. Doing the second
+  inside the `try` whose `finally` holds the `client.release()` is a deadlock whenever the
+  pool is small: the awaited pool query waits for a connection that only `release()` can
+  free, and `release()` sits after an `await` that never returns. It hangs forever — no
+  error, no timeout, no log. Both upload routes carried this (post-`COMMIT` `logAccess` +
+  `extractMetadataInline`) and it was invisible only because the pool was unbounded.
+  Fixed 2026-08-31; `POST /api/invitations/redeem` had the correct shape all along and is
+  the model: close the transaction, `release()`, **then** do pool work. Verified by
+  reproduction against the live DB at `max: 1` — old shape hung, new shape returned.
+  Re-check this before lowering `PG_POOL_MAX`.
+- **`outputFileTracingIncludes` keys are picomatch globs, not literal route strings.**
+  A dynamic segment written plainly — `"/api/resources/[id]/thumbnail"` — parses `[id]`
+  as a *character class* matching a single `i` or `d`, so the key matches no route and
+  the includes are silently dropped with no build error. Escape the brackets:
+  `"/api/resources/\\[id\\]/thumbnail"` (Next's own `output.md` example does this).
+  Verify by grepping the built `.next/server/app/**/route.js.nft.json` for the files you
+  expected — that trace file is the only proof the key matched.
 - Next.js `.env.local` is read at startup — restart `npm run dev` after editing it.
-- `psql` is not on PATH — use full path: `"C:\Program Files\PostgreSQL\18\bin\psql.exe"`.
+- **There is no native Postgres on this machine and no local `psql.exe`** — this bullet
+  used to point at `"C:\Program Files\PostgreSQL\18\bin\psql.exe"`, a path that does not
+  exist; the "How to run" section corrected the same error on 2026-08-18 but this line
+  survived it. Postgres is a Docker container on host port 5433. Reach it with
+  `docker compose exec postgres psql -U dam -d dam`, or from Node through `pg` using
+  `DATABASE_URL` (which is what every script in `frontend/scripts/` already does).
 - `jsonwebtoken` (not `jose`) — exact behavioral match with NestJS.
 - Password rule: 8+ chars, uppercase + lowercase + digit + special char (enforced in `validatePasswordStrength` inside `lib/users.ts`).
 - Route handler error pattern: lib functions throw `AppError`; handlers catch with `if (err instanceof AppError) return Response.json(...)`.
@@ -819,7 +1083,9 @@ These are known-pending features — not forgotten, not in progress. **Exception
 - ~~**`PDF_JPEG_QUALITY = 0.8` has the same unit bug as the image thumbnails**~~ **Resolved, same session, folded into Stage 83.** Fixed to `80` and all 17 existing PDF thumbnails force-regenerated — see Stage 83's updated entry.
 - ~~**New user registrations get `company_id: NULL` and are invisible to every read** (Stage 84's gap, made urgent by Stage 86)~~ **Superseded by Stage 91 — the replacement it was waiting for has shipped.** Stage 87's reasoning was that public self-registration would eventually be replaced by invite redemption (which sets `company_id` from the invite), so a stopgap DB default wasn't worth building; Stage 91 is that replacement — the UI no longer offers self-registration at all (`/signup` redirects to `/`), and invitation redemption is now the only UI path to a new account, always with a real `company_id`/`role_id`. ~~**New, narrower open item left by Stage 91 itself:** `POST /api/auth/register` was never disabled server-side, only unlinked from the UI.~~ **Resolved, Stage 105** — the route, the signup page stub, and `lib/users.ts::createUser` are all deleted; no code path creates a user except invite redemption.
 - ~~**`POST /api/collections`'s top-level creation still only writes `group_collection_access`, not `company_collection_access`**~~ **Resolved, Stage 87.** Creation-time grants now write `company_collection_access` (uuid-validated `companyIds`, fail-closed on an unknown id); the home page's create form fetches real companies via the new `GET /api/companies` instead of a hardcoded group list. Confirmed by grep to have been the last runtime writer to `group_collection_access` — nothing in `app/`/`lib/` writes that table anymore (only Stage 84's migration script still reads it). See Stage 87.
-- **Postgres exposed to the public internet** (opened 2026-08-18) — the consequence of hosting the DB on Coperon's own server while the app runs on Vercel, whose egress IPs are dynamic so no allowlist is possible. Flagged as the weakest joint in the chosen design; a concrete threat/mitigation comparison is owed before Phase 1 builds against it. Alternatives not yet ruled out: managed Postgres, or self-hosting the app too.
+- ~~**Postgres exposed to the public internet** (opened 2026-08-18)~~ **Moot as of 2026-08-31 — the design that caused it is gone.** It was the consequence of self-hosting the database on Coperon's Windows server while the app ran on Vercel; the "managed Postgres" alternative it listed as not-yet-ruled-out is now the chosen path (Neon, plan 3.1), so there is no self-managed socket to expose and no allowlist to fail to write. Nothing is owed here. The same move retires the sibling worries about PgBouncer having no Windows build and Docker Desktop being unfit for an unattended server.
+- **Do asset bytes have to stay on Coperon hardware?** (opened 2026-08-31, and the one open question that can still overturn the hosting plan.) The 2026-08-18 plan asserted it; this file has never recorded a *reason* — no contract, no data-residency clause, just the assertion. If it is real, Cloudflare R2 is out and the path is AIStor Free on Coperon-controlled hardware; if it was only an assumption from when self-hosting looked easier, the Vercel + Neon + R2 plan stands as written. **Answer this before Phase 3 spends money.** Nothing else in the plan is blocked on it.
+- **Transactional email provider** (opened 2026-08-31) — `lib/mail.ts` still sends through Gmail SMTP with an app password (~500/day, and Google flags app-password SMTP from rotating serverless IPs). Moving to Resend/Postmark is a config-only swap on the same `nodemailer` transport. Right on any host; urgent on a serverless one. Not started.
 - **Whether to move the repo into a GitHub organization** (opened 2026-08-18) — `CoperonDev` is a personal account, so access control is one person's account rather than team-managed. GitHub can transfer a repo into an org later without losing history, so this is deferrable, not urgent.
 - **When to rotate the live secrets** (opened 2026-08-18) — see "Security — outstanding". Rotation logs everyone out and needs Docker/Postgres running, so it was deliberately not done mid-session.
 

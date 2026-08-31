@@ -15,6 +15,25 @@ import db from '@/lib/db';
 // still in flight. Errors are swallowed here too (not just inside
 // applyExtractedMetadata) since a getObject failure is no more the upload's
 // problem than a bad EXIF block is.
+// Pulls the just-uploaded image back out of object storage to read its EXIF,
+// so this route's wall-clock is a storage round-trip on top of the inserts.
+// The platform default (often 10-15s on serverless) is not enough headroom
+// for a large image on a cold instance.
+export const maxDuration = 60;
+
+// The RETURNING list shared by both INSERT branches below. Named so the row
+// can be declared before the transaction's try block and used after it — see
+// the deadlock note at the first COMMIT.
+type NewResourceRow = {
+  id: string;
+  original_filename: string;
+  storage_key: string;
+  mime_type: string;
+  size_bytes: number;
+  status: string;
+  created_at: string;
+};
+
 async function extractMetadataInline(
   resourceId: string,
   storageKey: string,
@@ -107,6 +126,7 @@ export async function POST(request: Request) {
       }
 
       const client = await db.connect();
+      let resource!: NewResourceRow;
       try {
         await client.query('BEGIN');
 
@@ -122,7 +142,7 @@ export async function POST(request: Request) {
            RETURNING id, original_filename, storage_key, mime_type, size_bytes, status, created_at`,
           [filename, body.key, body.contentType, body.size, user.sub],
         );
-        const resource = result.rows[0];
+        resource = result.rows[0];
         await client.query(
           'INSERT INTO collection_resource (collection_id, resource_id) VALUES ($1, $2)',
           [collectionId, resource.id],
@@ -163,28 +183,40 @@ export async function POST(request: Request) {
         }
 
         await client.query('COMMIT');
-        // Fire-and-forget — mirrors the point where the client fires its own
-        // fire-and-forget thumbnail-generation request, right after this same
-        // 201 lands.
-        logAccess({
-          userId: user.sub,
-          tenantId: user.tenantId ?? null,
-          resourceId: resource.id,
-          action: 'upload',
-          metadata: { filename: resource.original_filename, collectionId },
-        });
-        await extractMetadataInline(resource.id, resource.storage_key, resource.mime_type, user.tenantId ?? null);
-        return Response.json(resource, { status: 201 });
       } catch (err) {
         await client.query('ROLLBACK');
         throw err;
       } finally {
         client.release();
       }
+
+      // Both of these go through the shared pool and therefore need their own
+      // connection, so they must run AFTER client.release(), never before it.
+      // Inside the try they deadlock a small pool: the transaction client is
+      // still checked out, the awaited extractMetadataInline waits for a
+      // second connection that only client.release() can free, and
+      // client.release() is in a finally that the await never reaches. With
+      // PG_POOL_MAX=1 (the serverless setting — see lib/db.ts) that hangs
+      // every upload permanently. Same ordering rule, and the same reason, as
+      // POST /api/invitations/redeem's post-COMMIT mint.
+      //
+      // Fire-and-forget — mirrors the point where the client fires its own
+      // fire-and-forget thumbnail-generation request, right after this same
+      // 201 lands.
+      logAccess({
+        userId: user.sub,
+        tenantId: user.tenantId ?? null,
+        resourceId: resource.id,
+        action: 'upload',
+        metadata: { filename: resource.original_filename, collectionId },
+      });
+      await extractMetadataInline(resource.id, resource.storage_key, resource.mime_type, user.tenantId ?? null);
+      return Response.json(resource, { status: 201 });
     }
 
     // No collectionId — dedupe against the Unassigned set, then insert.
     const client = await db.connect();
+    let resource!: NewResourceRow;
     try {
       await client.query('BEGIN');
       const filename = await resolveUniqueFilename(client, null, body.filename);
@@ -196,22 +228,24 @@ export async function POST(request: Request) {
         [filename, body.key, body.contentType, body.size, user.sub],
       );
       await client.query('COMMIT');
-      const resource = result.rows[0];
-      logAccess({
-        userId: user.sub,
-        tenantId: user.tenantId ?? null,
-        resourceId: resource.id,
-        action: 'upload',
-        metadata: { filename: resource.original_filename, collectionId: null },
-      });
-      await extractMetadataInline(resource.id, resource.storage_key, resource.mime_type, user.tenantId ?? null);
-      return Response.json(resource, { status: 201 });
+      resource = result.rows[0];
     } catch (err) {
       await client.query('ROLLBACK');
       throw err;
     } finally {
       client.release();
     }
+
+    // After client.release(), for the deadlock reason documented above.
+    logAccess({
+      userId: user.sub,
+      tenantId: user.tenantId ?? null,
+      resourceId: resource.id,
+      action: 'upload',
+      metadata: { filename: resource.original_filename, collectionId: null },
+    });
+    await extractMetadataInline(resource.id, resource.storage_key, resource.mime_type, user.tenantId ?? null);
+    return Response.json(resource, { status: 201 });
   } catch (err) {
     if (err instanceof AppError) {
       return Response.json({ message: err.message }, { status: err.status });
