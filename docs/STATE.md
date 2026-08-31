@@ -51,7 +51,7 @@ bcrypt hashes), `minio_backup.tar.gz` (155 MB, over GitHub's file limit),
 | Frontend + API routes | `frontend/` (Next.js 16.2.9, App Router) | Active — build + prod server re-verified 2026-08-31 |
 | Schema migrations | `db/migrations/`, runner at `frontend/scripts/migrate.mjs` | New 2026-08-18 — **baseline still unverified** against the live DB (plan 2.1) |
 | Database | PostgreSQL 18 **in Docker**, host port **5433** | Live, fully seeded — 136 resources / 9 users / 32 collections |
-| Object storage | MinIO in Docker, pinned `RELEASE.2025-09-07` | Running — but **MinIO was archived 25 Apr 2026** and is unmaintained; move off it before beta (plan 3.2) |
+| Object storage | MinIO in Docker, **not pinned** — `damInfra/docker-compose.yml` says `minio/minio:latest`; the container happens to be running `RELEASE.2025-09-07` because that is what `latest` resolved to when it was pulled (corrected 2026-08-31 — this row previously claimed it was pinned) | Running, holding **307 objects / 206.5 MB**. **MinIO was archived 25 Apr 2026** and is unmaintained; move off it before beta (plan 3.2). Until then, avoid `docker compose pull` — `latest` can move under you. |
 | Legacy NestJS backend | Archived outside the repo | Removed from the tree 2026-08-18 |
 | Redis / BullMQ | In `docker-compose.yml`, unused by code | Not needed — a DB-backed job table would do if a queue is ever wanted |
 | Worker process | Not built | Media processing runs in-request; acceptable on a single server |
@@ -236,31 +236,123 @@ recursive access check in the app walks that column and only the PK exists today
 
 ### Phase 3 — Infrastructure move
 
-**3.1 Neon.** Create the project, apply migrations with `node scripts/migrate.mjs`,
-load the data. **Use the pooled (`-pooler`) connection string** — verified 2026-08-31
-that the codebase is transaction-mode-pooler safe: every transaction takes a dedicated
-client via `db.connect()` before `BEGIN`, and there is no `LISTEN`/`NOTIFY`, no
-session-scoped `SET`, and no SQL-level `PREPARE` anywhere. Free tier compute suspends
-after 5 min idle (cold start on the next request) — acceptable for beta.
+**3.1 Neon.** Use the pooled (`-pooler`) connection string — verified 2026-08-31 that
+the codebase is transaction-mode-pooler safe: every transaction takes a dedicated client
+via `db.connect()` before `BEGIN`, and there is no `LISTEN`/`NOTIFY`, no session-scoped
+`SET`, and no SQL-level `PREPARE` anywhere. Free tier compute suspends after 5 min idle
+(cold start on the next request) — acceptable for beta. Set **`PG_POOL_MAX=1`** (the
+knob added 2026-08-31; see `lib/db.ts`).
 
-**3.2 Object storage — moving off MinIO.** **MinIO was archived 25 April 2026**; the
-repo is read-only, MinIO Inc. stopped development in Feb 2026, and the community edition
-is source-only with no precompiled binaries. The local container is pinned to a 2025
-release that will receive no security updates. Fine for dev, wrong foundation for a
-beta holding client assets. **Recommended: Cloudflare R2** — 10 GB free (current usage
-155 MB), zero egress, which matters more than Backblaze B2's cheaper per-GB storage
-because a DAM's whole job is serving files. Migration is config-only (`lib/storage.ts`
-already reads endpoint/creds/bucket from env); copy objects with `rclone`, keep the
-keys identical so every existing `storage_key` still resolves.
-**Expect one incompatibility:** since v3.729.0 the AWS SDK sends a CRC32 checksum on
-every upload by default and several S3-compatible providers reject it. `package.json`
-pins `^3.1075.0` and the behaviour is live (presigned URLs carry
-`x-amz-checksum-mode=ENABLED`). If uploads fail with `InvalidArgument` / unsupported
-header, set `requestChecksumCalculation: "WHEN_REQUIRED"` and
-`responseChecksumValidation: "WHEN_REQUIRED"` on the `S3Client`.
-If asset bytes must stay on Coperon hardware for a contractual or data-residency
-reason — this file records the intent but never a reason — then R2 is out and the path
-is AIStor Free (MinIO's successor), not archived MinIO. **Settle this explicitly.**
+*Check before creating the project — these are unverified and one of them can force
+rework:*
+
+- **Postgres version.** Local is **18.4**. If Neon's newest offering is older, a
+  `pg_dump` taken from 18 is **not guaranteed to restore into it** — dumps are forward-
+  compatible, not backward. Check Neon's available versions *first*; if 18 is not
+  offered, take the dump with the older `pg_dump` binary matching the target.
+- **Extensions.** `0001_baseline.sql` creates **`pg_trgm`** and **`pgcrypto`**. Both are
+  normally available on Neon, but confirm before assuming — the baseline fails at line 31
+  otherwise.
+- **`resources.search_vector` is a `GENERATED ALWAYS AS (...) STORED` tsvector.** It
+  restores as a generated column and must not be dumped as data; verify it is present and
+  populated after the load, since search silently returns nothing if it is not.
+
+*Load order matters, and the obvious approach corrupts the migration ledger:*
+
+1. **Do Phase 2.1 first.** `0001_baseline.sql` has still never been verified against the
+   live database. Everything here assumes it is right; if it is wrong, it is wrong on
+   Neon too, only now with data on top.
+2. **Restore a full `pg_dump` (schema + data)** into the empty Neon database. Do *not*
+   run `migrate.mjs` first and then load a `--data-only` dump: data-only restores do not
+   guarantee foreign-key ordering, and the usual escape hatch — `--disable-triggers` —
+   **requires superuser, which Neon does not grant.**
+3. **Then mark the baseline as applied by hand**, or the ledger will claim the schema was
+   never created. `migrate.mjs` records a sha256 per file and will otherwise report
+   `0001_baseline.sql` as PENDING and try to re-run it. Compute the hash the same way the
+   runner does (sha256 of the file read as utf8), then insert one row into Neon:
+   `INSERT INTO schema_migrations (filename, checksum) VALUES ('0001_baseline.sql', '<hash>');`
+   Confirm with `node scripts/migrate.mjs --status` → `applied  0001_baseline.sql`.
+4. **Verify row counts against the known baseline: 136 resources / 9 users / 32
+   collections.**
+
+*Two operational facts that are easy to trip over:*
+
+- **Migrations can never run on Vercel.** `migrate.mjs` resolves `../../db/migrations`,
+  and `db/` sits *outside* `frontend/`, which is the Root Directory Vercel deploys — the
+  directory simply is not there. Migrations run from a local checkout or CI with
+  `DATABASE_URL` pointed at Neon. This is fine, but it must be someone's documented job.
+- **`dam_backup.sql` is not a production seed.** It carries live user rows, bcrypt
+  hashes, and a shared test-account password that is a **super_admin** login. Decide what
+  happens to those accounts *before* the restore, not after.
+
+**3.2 Object storage — moving to Cloudflare R2.** **MinIO was archived 25 April 2026**;
+the repo is read-only, development stopped Feb 2026, and the community edition is
+source-only with no precompiled binaries. The local container is pinned to a 2025 release
+that will receive no security updates. **Cloudflare R2** — 10 GB free, zero egress, which
+matters more than Backblaze B2's cheaper per-GB rate because a DAM's whole job is serving
+files.
+
+*Current inventory, measured 2026-08-31 (this file previously said 155 MB — stale):*
+
+| | |
+|---|---|
+| Objects in bucket | **307** |
+| Total size | **206.5 MB** (largest single object 50.2 MB) — comfortably inside R2's 10 GB free tier |
+| Key prefixes | `uploads/`, `thumbnails/` |
+| Keys referenced by the DB | 277 |
+| **Referenced but missing** | **0** — no broken links |
+| Orphaned in store | 30 (unreferenced bytes, from deleted resources and test residue) |
+
+Storage keys in the database are **all relative** (verified: 0 of 136 resources hold an
+absolute URL), so copying objects under identical keys means every existing
+`storage_key`, `thumbnail_storage_key` and `cover_storage_key` resolves unchanged with no
+data rewrite. Copy with `rclone`; **keep the keys byte-identical.**
+
+*Blocker 1 — the checksum bug is real, and worse than "some providers reject the
+header."* Proven by inspecting a generated URL on 2026-08-31: the presigned **PUT**
+carries `x-amz-checksum-crc32=AAAAAA==` as a query parameter. `AAAAAA==` is the CRC32 of
+an **empty body** — presigning has no payload to hash, so the SDK baked in the checksum of
+nothing. MinIO ignores it, which is why uploads work today; a provider that *validates* it
+will reject **every upload of a non-empty file**. The presigned GET likewise carries
+`x-amz-checksum-mode=ENABLED`. The fix is two options on the `S3Client` in
+`lib/storage.ts`, confirmed on 2026-08-31 to remove both parameters:
+`requestChecksumCalculation: 'WHEN_REQUIRED'` and
+`responseChecksumValidation: 'WHEN_REQUIRED'`.
+
+**This is the only code change either migration requires.** Everything else is config.
+
+*Blocker 2 — CORS, which nothing in this plan previously mentioned.* The browser talks to
+object storage **directly**, cross-origin, on both legs: `fetch(uploadUrl, {method:'PUT'})`
+for every upload, and `fetch(presignedGetUrl)` → `URL.createObjectURL(blob)` for every
+thumbnail, cover, download and bulk-zip member. **MinIO permits cross-origin requests by
+default; R2 denies them by default.** Without a bucket CORS policy the app appears to work
+until any file is uploaded or displayed. Configure on the R2 bucket before cutover:
+allowed origins = the real app origin (plus any preview domains), allowed methods = `GET`
+and `PUT`, allowed headers = at least `content-type`. Note `X-Amz-SignedHeaders` is `host`
+only, so the browser's `Content-Type` is not part of the signature and cannot cause a
+mismatch.
+
+*Configuration:*
+
+| Var | Value |
+|---|---|
+| `S3_ENDPOINT` | `https://<account-id>.r2.cloudflarestorage.com` |
+| `S3_REGION` | **`auto`** — R2's region. `lib/storage.ts` defaults to `us-east-1`, so this must be set explicitly. |
+| `S3_ACCESS_KEY` / `S3_SECRET_KEY` | An R2 API token **scoped to this one bucket**, not account-wide — and the natural moment to stop using root credentials (Phase 1.2). |
+| `S3_BUCKET` | the R2 bucket name |
+
+`forcePathStyle: true` is hardcoded and correct for R2, which addresses buckets as
+`<endpoint>/<bucket>/<key>`.
+
+*Verification after the copy — do not accept "the app loads" as proof:*
+
+1. Re-run the reconciliation that produced the table above: **all 277 referenced keys must
+   resolve in R2, and "referenced but missing" must still be 0.**
+2. A real upload round-trip through the actual flow: `POST /api/upload/url` → browser PUT
+   → `POST /api/upload/complete` → the file downloads back and its bytes match. This is
+   what proves the checksum fix, and nothing else does.
+3. A thumbnail and a collection cover rendering in a browser — that, and only that, proves
+   the CORS policy is right.
 
 **3.3 Vercel for the app (decided 2026-08-31, reversing the IIS plan).** IIS was only
 ever chosen because Postgres and MinIO were going to live on that same Windows box.
@@ -904,7 +996,7 @@ today, and local dev is unchanged by leaving them unset):**
 |---|---|---|
 | App (Next.js) | **Vercel, Pro plan** | Root Directory = `frontend`. Pro is mandatory — Hobby is non-commercial use only. |
 | PostgreSQL | **Neon**, pooled (`-pooler`) connection string | Codebase verified transaction-pooler safe (plan 3.1). |
-| Object storage | **Cloudflare R2** | 10 GB free vs. 155 MB in use; zero egress. Config-only swap — `lib/storage.ts` is already env-driven. |
+| Object storage | **Cloudflare R2** | 10 GB free vs. **206.5 MB / 307 objects** in use (measured 2026-08-31); zero egress. One code change (the checksum options in plan 3.2), otherwise config-only — `lib/storage.ts` is already env-driven. |
 | Transactional email | **A provider (Resend/Postmark), not Gmail SMTP** | Not yet done — see below. |
 | Coperon's Windows server | **No longer in the design** | Nothing is deployed to it. |
 
