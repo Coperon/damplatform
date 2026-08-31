@@ -502,23 +502,44 @@ self-hosting the database:
 | Every video round-trips to Vercel and back, paid egress twice | **Half gone** — R2 charges zero egress (3.2); what remains is Vercel-side compute, not transfer cost |
 | 250 MB serverless bundle vs. the FFmpeg binary | **Real, and measured** — see below |
 
-Root Directory = `frontend`. **Pro plan is mandatory, and there are now three independent
-reasons rather than one** — the first was known, the other two were hit in practice on
-2026-08-31 while trying to deploy from the Hobby plan:
+Root Directory = `frontend`. **Correction, 2026-08-31: this file previously claimed "Pro
+plan is mandatory, and there are now three independent reasons." That was wrong — two of
+the three do not hold, and Hobby is technically sufficient for this app.** The claim was
+challenged with the obvious evidence (three other projects running fine on Hobby) and
+checked against Vercel's own limits page rather than restated.
 
-1. **Licensing.** Hobby is non-commercial-use only.
-2. **Hobby blocks deployments whose commit author is not a project collaborator**, and it
-   does not support collaboration on private repositories at all. The first `dev` push
-   was refused outright: *"The deployment was blocked because the commit author did not
-   have contributing access to the project on Vercel."* The repo is owned by
-   **CoperonDev** while commits were being authored as **JoeYoussef44C** — two of the
-   three GitHub accounts on this machine (see "Version control"). Fixed by setting a
-   **repo-local** git identity (`git config user.email dev@coperon.com`), leaving the
-   global one alone.
-3. **`maxDuration = 300` exceeds Hobby's 60-second ceiling.** The thumbnail route
-   declares 300 (plan 3.3 below); Hobby caps function duration at 60 s and rejects a
-   larger value. Even if 1 and 2 were solved, this route would not deploy — and lowering
-   it to 60 is not a fix, it just moves the failure to the first large video.
+| Claimed blocker | Actual status |
+|---|---|
+| `maxDuration = 300` exceeds Hobby's ceiling | **False.** Vercel's limits page (updated 2026-08-24) gives Hobby **300s default *and* maximum** for Node.js with fluid compute. Our 300 sits exactly at the ceiling. The 60 s figure was an outdated pre-fluid-compute limit. |
+| Hobby blocks non-collaborator commit authors | **Was true, now resolved.** The first `dev` push was refused — *"the commit author did not have contributing access"* — because the repo is owned by **CoperonDev** while commits were authored as **JoeYoussef44C** (two of the three GitHub accounts on this machine; see "Version control"). Fixed with a **repo-local** git identity (`git config user.email dev@coperon.com`), leaving the global one alone. Deployments now run under author `coperondev`. |
+| Hobby is non-commercial-use only | **Still true**, and the only reason left. That is a licensing and business decision, not a technical one. |
+
+**Other Hobby ceilings, checked against what this app actually does — all fine:**
+
+- **Memory 2 GB / 1 vCPU** (Pro gets 4 GB / 2 vCPU). The thumbnail route buffers a whole
+  file; the largest object in the old library was 50 MB. Comfortable.
+- **Bundle 250 MB uncompressed.** The thumbnail function is ~130–140 MB (see below).
+  "Large functions" up to 5 GB exist on fluid compute if that ever changes.
+- **Request/response body 4.5 MB.** Does not constrain uploads at all — the browser PUTs
+  straight to object storage via presigned URL and never sends bytes through a function.
+  It only bounds the server-side Import-from-URL path, itself capped at 15 MB in code.
+
+**The Hobby limit that does matter, and must be acted on: function region.** Vercel
+functions run in **a single region, defaulting to `iad1` (Washington DC)**, and only Pro
+and Enterprise can set *multiple* regions — but Hobby can still change the one. Neon is in
+`eu-central-1` and the B2 bucket is in Amsterdam, so leaving the default means **every
+query and every thumbnail fetch crosses the Atlantic**, undoing the entire reason the Neon
+project was deleted and recreated in the EU. **Set the function region to Frankfurt
+(`fra1`)** in Project Settings → Functions.
+
+**And the reason nothing has deployed so far, diagnosed 2026-08-31: Root Directory is not
+set.** Deployments were reporting *Ready* in **2–3 seconds** — a real Next.js build of this
+app takes minutes. Vercel was pointed at the repository root, which has no `package.json`
+and no `next.config.ts` (they are in `frontend/`), found no framework, deployed the root as
+a static site with no `index.html`, and the production alias returned Vercel's own
+platform `404: NOT_FOUND` — recognisable because it is unstyled and carries a `cdg1::`
+request id, rather than the app's own Next.js 404 page. **A green "Ready" here means a
+successful deployment of nothing.**
 
 What remains genuinely Vercel-specific was measured and closed on 2026-08-31:
 
