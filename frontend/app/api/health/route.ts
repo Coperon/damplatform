@@ -39,8 +39,7 @@ export async function GET() {
       region: process.env.VERCEL_REGION ?? null,
       commit: process.env.VERCEL_GIT_COMMIT_SHA?.slice(0, 7) ?? null,
       latencyMs: Date.now() - startedAt,
-      timestamp: new Date().toISOString(),
-    },
+      timestamp: new Date().toISOString() },
     { status: ok ? 200 : 503 },
   );
 }

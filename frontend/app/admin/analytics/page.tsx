@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useState } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
+import { getSessionClaims } from "@/lib/clientSession";
 import AppShell from "@/components/AppShell";
 import Select from "@/components/Select";
 import { useTranslation } from "@/lib/i18n";
@@ -15,8 +16,7 @@ const RANGE_LABEL_KEYS: Record<Range, string> = {
   "7d": "analytics.range.7d",
   "30d": "analytics.range.30d",
   "90d": "analytics.range.90d",
-  all: "analytics.range.all",
-};
+  all: "analytics.range.all" };
 
 interface TenantBreakdown {
   tenantId: string;
@@ -58,17 +58,8 @@ interface AnalyticsResponse {
   timeSeries: DayRow[];
 }
 
-function parseToken(token: string): Record<string, unknown> | null {
-  try {
-    return JSON.parse(atob(token.split(".")[1]));
-  } catch {
-    return null;
-  }
-}
-
 function authHeaders(): Record<string, string> {
-  const token = localStorage.getItem("token");
-  return token ? { Authorization: `Bearer ${token}` } : {};
+  return {};
 }
 
 function userLabel(row: UserRow, t: TFunc): string {
@@ -80,8 +71,7 @@ function shortDay(iso: string): string {
   return new Date(`${iso}T00:00:00Z`).toLocaleDateString(undefined, {
     month: "short",
     day: "numeric",
-    timeZone: "UTC",
-  });
+    timeZone: "UTC" });
 }
 
 function StatTile({ label, value }: { label: string; value: number }) {
@@ -115,8 +105,7 @@ function SeriesLegend() {
 // comparable at a glance; counts are direct-labeled rather than relying on
 // bar length alone to carry the exact value.
 function TwoSeriesBarList({
-  rows,
-}: {
+  rows }: {
   rows: { label: string; views: number; downloads: number }[];
 }) {
   const max = Math.max(1, ...rows.flatMap((r) => [r.views, r.downloads]));
@@ -215,8 +204,7 @@ function TimeSeriesChart({ data }: { data: DayRow[] }) {
                 <div
                   className="w-[5px] rounded-t-[3px] bg-chart-downloads"
                   style={{
-                    height: d.downloads > 0 ? `${Math.max(2, (d.downloads / max) * CHART_HEIGHT)}px` : 0,
-                  }}
+                    height: d.downloads > 0 ? `${Math.max(2, (d.downloads / max) * CHART_HEIGHT)}px` : 0 }}
                 />
               </div>
               <span className="mt-1 h-3 whitespace-nowrap text-[9px] text-slate">
@@ -259,12 +247,9 @@ export default function AnalyticsPage() {
   }, [t]);
 
   useEffect(() => {
-    const token = localStorage.getItem("token");
-    if (!token) {
-      router.replace("/");
-      return;
-    }
-    const payload = parseToken(token);
+    void (async () => {
+    const payload = await getSessionClaims();
+    if (!payload) { router.replace("/"); return; }
     if (!payload?.canAdmin) {
       setNotAdmin(true);
       setAuthorized(true);
@@ -274,7 +259,7 @@ export default function AnalyticsPage() {
     setAuthorized(true);
     load(range);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [router]);
+  })();}, [router]);
 
   useEffect(() => {
     if (!authorized || notAdmin) return;
@@ -357,8 +342,7 @@ export default function AnalyticsPage() {
                       rows={data.byTenant.map((c) => ({
                         label: c.tenantName,
                         views: c.views,
-                        downloads: c.downloads,
-                      }))}
+                        downloads: c.downloads }))}
                     />
                   )}
                 </div>
@@ -384,8 +368,7 @@ export default function AnalyticsPage() {
                     <RankedBarList
                       rows={data.topViewed.map((a) => ({
                         label: a.filename ?? t("analytics.asset.deleted"),
-                        value: a.count,
-                      }))}
+                        value: a.count }))}
                     />
                   )}
                 </div>
@@ -398,8 +381,7 @@ export default function AnalyticsPage() {
                     <RankedBarList
                       rows={data.topDownloaded.map((a) => ({
                         label: a.filename ?? t("analytics.asset.deleted"),
-                        value: a.count,
-                      }))}
+                        value: a.count }))}
                     />
                   )}
                 </div>
@@ -413,8 +395,7 @@ export default function AnalyticsPage() {
                   <RankedBarList
                     rows={data.topUsers.map((u) => ({
                       label: userLabel(u, t),
-                      value: u.count,
-                    }))}
+                      value: u.count }))}
                   />
                 )}
               </div>

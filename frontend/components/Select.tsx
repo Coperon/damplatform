@@ -47,8 +47,7 @@ export default function Select({
   disabled = false,
   id,
   ariaLabel,
-  className,
-}: SelectProps) {
+  className }: SelectProps) {
   const [open, setOpen] = useState(false);
   const [pos, setPos] = useState<{ top?: number; bottom?: number; left: number; width: number } | null>(null);
   const [activeIndex, setActiveIndex] = useState(0);
@@ -57,8 +56,7 @@ export default function Select({
   const listRef = useRef<HTMLDivElement>(null);
   const typeaheadRef = useRef<{ buffer: string; timer: ReturnType<typeof setTimeout> | null }>({
     buffer: "",
-    timer: null,
-  });
+    timer: null });
 
   // Falls back to a React-generated id (stable per instance, collision-free
   // across every Select on the page) whenever the caller doesn't pass one —

@@ -23,16 +23,13 @@ export default function LoginPage() {
       const res = await fetch("/api/auth/login", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ email, password }),
-      });
+        body: JSON.stringify({ email, password }) });
 
       if (!res.ok) {
         setMessage("Login failed: invalid email or password.");
         return;
       }
 
-      const data = await res.json();
-      localStorage.setItem("token", data.access_token);
       router.push("/home");
     } catch {
       setMessage("Could not reach the server.");
@@ -62,8 +59,7 @@ export default function LoginPage() {
           className="pointer-events-none absolute bottom-0 left-0 z-[5] hidden h-[320px] w-[480px] lg:block"
           style={{
             background:
-              "radial-gradient(circle at 0% 100%, rgba(255,255,255,0.4) 0%, rgba(255,255,255,0.18) 35%, rgba(255,255,255,0) 70%)",
-          }}
+              "radial-gradient(circle at 0% 100%, rgba(255,255,255,0.4) 0%, rgba(255,255,255,0.18) 35%, rgba(255,255,255,0) 70%)" }}
         />
 
         {/* Tagline — bottom-left; hidden on mobile where the panel collapses to a short strip */}

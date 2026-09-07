@@ -7,8 +7,7 @@ import AuthShell, {
   authButtonClass,
   authMessageClass,
   authLinkClass,
-  authBackLinkClass,
-} from "@/components/AuthShell";
+  authBackLinkClass } from "@/components/AuthShell";
 import { useTranslation, interpolateJSX } from "@/lib/i18n";
 
 type Status = "loading" | "invalid" | "ready" | "success";
@@ -63,8 +62,7 @@ function ConfirmEmailForm() {
       const res = await fetch("/api/profile/email-change/confirm", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ token }),
-      });
+        body: JSON.stringify({ token }) });
       const body = await res.json().catch(() => ({}));
       if (!res.ok) {
         // The atomic re-check inside confirmEmailChange is authoritative — the
@@ -120,8 +118,7 @@ function ConfirmEmailForm() {
         <>
           <p className="text-center text-sm text-slate">
             {interpolateJSX(t("confirmEmail.success.message"), {
-              email: <span className="font-medium text-ink">{newEmail}</span>,
-            })}
+              email: <span className="font-medium text-ink">{newEmail}</span> })}
           </p>
           <p className="mt-4 text-center text-sm">
             <Link href="/" className={authLinkClass}>

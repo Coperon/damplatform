@@ -3,6 +3,7 @@
 import { useEffect, useState } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
+import { getSessionClaims } from "@/lib/clientSession";
 import AppShell from "@/components/AppShell";
 import Select from "@/components/Select";
 import { EXIF_SOURCES } from "@/lib/exifSources";
@@ -25,8 +26,7 @@ const FIELD_TYPE_LABEL_KEYS: Record<FieldType, string> = {
   textarea: "metadataFields.type.textarea",
   checkbox_group: "metadataFields.type.checkboxGroup",
   tag: "metadataFields.type.tag",
-  date: "metadataFields.type.date",
-};
+  date: "metadataFields.type.date" };
 
 interface MetadataField {
   id: number;
@@ -69,14 +69,6 @@ function optionsToText(options: string[] | null): string {
 
 function parseOptionsText(text: string): string[] {
   return text.split(",").map((s) => s.trim()).filter(Boolean);
-}
-
-function parseToken(token: string): Record<string, unknown> | null {
-  try {
-    return JSON.parse(atob(token.split(".")[1]));
-  } catch {
-    return null;
-  }
 }
 
 
@@ -153,8 +145,7 @@ export default function MetadataFieldsPage() {
   const [addError, setAddError] = useState<string | null>(null);
 
   function authHeaders(): Record<string, string> {
-    const token = localStorage.getItem("token");
-    return token ? { Authorization: `Bearer ${token}` } : {};
+    return {};
   }
 
   function seedPending(data: MetadataField[]) {
@@ -166,8 +157,7 @@ export default function MetadataFieldsPage() {
         searchable: f.searchable,
         options: optionsToText(f.options),
         required: f.required,
-        exifSource: f.exif_source ?? NO_EXIF_SOURCE,
-      };
+        exifSource: f.exif_source ?? NO_EXIF_SOURCE };
     }
     setPending(initial);
   }
@@ -196,12 +186,9 @@ export default function MetadataFieldsPage() {
   }
 
   useEffect(() => {
-    const token = localStorage.getItem("token");
-    if (!token) {
-      router.replace("/");
-      return;
-    }
-    const payload = parseToken(token);
+    void (async () => {
+    const payload = await getSessionClaims();
+    if (!payload) { router.replace("/"); return; }
     // Tenant-scoped metadata fields (this stage): a tenant admin manages
     // their own tenant's fields (plus a read-only view of Coperon's global
     // ones); a super admin manages every tenant's. Both carry canAdmin,
@@ -217,7 +204,7 @@ export default function MetadataFieldsPage() {
     loadFields();
     if (payload?.roleName === "super_admin") loadCompanies();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [router]);
+  })();}, [router]);
 
   function isDirty(f: MetadataField): boolean {
     const p = pending[f.id];
@@ -261,9 +248,7 @@ export default function MetadataFieldsPage() {
           // no Scope control at all (their field is always their own
           // tenant, forced server-side from the token regardless of what,
           // if anything, were sent here).
-          ...(isSuperAdminUser ? { tenantId: scopeTenantId || null } : {}),
-        }),
-      });
+          ...(isSuperAdminUser ? { tenantId: scopeTenantId || null } : {}) }) });
       const body = await res.json().catch(() => ({}));
       if (!res.ok) {
         setAddError((body as { error?: string }).error ?? t("common.error.generic", { status: res.status }));
@@ -279,8 +264,7 @@ export default function MetadataFieldsPage() {
         await fetch(`/api/metadata-fields/${created.id}`, {
           method: "PATCH",
           headers: { "Content-Type": "application/json", ...authHeaders() },
-          body: JSON.stringify({ sortOrder: scopeCount }),
-        });
+          body: JSON.stringify({ sortOrder: scopeCount }) });
       }
 
       // Refetch rather than splice locally: the POST response has no
@@ -325,8 +309,7 @@ export default function MetadataFieldsPage() {
       const res = await fetch(`/api/metadata-fields/${field.id}`, {
         method: "PATCH",
         headers: { "Content-Type": "application/json", ...authHeaders() },
-        body: JSON.stringify(body),
-      });
+        body: JSON.stringify(body) });
       const resBody = await res.json().catch(() => ({}));
       if (!res.ok) {
         setRowErrors((prev) => ({ ...prev, [field.id]: (resBody as { error?: string }).error ?? t("common.error.generic", { status: res.status }) }));
@@ -344,9 +327,7 @@ export default function MetadataFieldsPage() {
           searchable: updated.searchable,
           options: optionsToText(updated.options),
           required: updated.required,
-          exifSource: updated.exif_source ?? NO_EXIF_SOURCE,
-        },
-      }));
+          exifSource: updated.exif_source ?? NO_EXIF_SOURCE } }));
       setSavedIds((prev) => new Set(prev).add(field.id));
       setTimeout(() => {
         setSavedIds((prev) => { const n = new Set(prev); n.delete(field.id); return n; });
@@ -379,8 +360,7 @@ export default function MetadataFieldsPage() {
         const res = await fetch(`/api/metadata-fields/${reordered[i].id}`, {
           method: "PATCH",
           headers: { "Content-Type": "application/json", ...authHeaders() },
-          body: JSON.stringify({ sortOrder: i }),
-        });
+          body: JSON.stringify({ sortOrder: i }) });
         if (res.ok) updates.push(await res.json());
       }
       setFields((prev) => {
@@ -409,8 +389,7 @@ export default function MetadataFieldsPage() {
     try {
       const res = await fetch(`/api/metadata-fields/${field.id}`, {
         method: "DELETE",
-        headers: authHeaders(),
-      });
+        headers: authHeaders() });
       if (!res.ok) {
         const body = await res.json().catch(() => ({}));
         setRowErrors((prev) => ({ ...prev, [field.id]: (body as { error?: string }).error ?? t("common.error.generic", { status: res.status }) }));
@@ -491,8 +470,7 @@ export default function MetadataFieldsPage() {
                 searchable: f.searchable,
                 options: optionsToText(f.options),
                 required: f.required,
-                exifSource: f.exif_source ?? NO_EXIF_SOURCE,
-              };
+                exifSource: f.exif_source ?? NO_EXIF_SOURCE };
               const dirty = isDirty(f);
               const saving = savingIds.has(f.id);
               const saved = savedIds.has(f.id);
@@ -554,14 +532,11 @@ export default function MetadataFieldsPage() {
                             [f.id]: {
                               ...edit,
                               field_type: nextType,
-                              exifSource: stillApplies ? edit.exifSource : NO_EXIF_SOURCE,
-                            },
-                          }));
+                              exifSource: stillApplies ? edit.exifSource : NO_EXIF_SOURCE } }));
                         }}
                         options={(Object.entries(FIELD_TYPE_LABEL_KEYS) as [FieldType, string][]).map(([value, labelKey]) => ({
                           value,
-                          label: t(labelKey),
-                        }))}
+                          label: t(labelKey) }))}
                         className={`flex cursor-pointer items-center justify-between gap-2 rounded-[8px] border bg-card py-1.5 px-3 text-sm text-ink outline-none transition-shadow focus:ring-[3px] disabled:cursor-not-allowed disabled:opacity-50 ${
                           dirty ? "border-brand ring-[3px] ring-brand/15" : "border-line focus:border-brand focus:ring-brand/15"
                         }`}
@@ -720,8 +695,7 @@ export default function MetadataFieldsPage() {
             }}
             options={(Object.entries(FIELD_TYPE_LABEL_KEYS) as [FieldType, string][]).map(([value, labelKey]) => ({
               value,
-              label: t(labelKey),
-            }))}
+              label: t(labelKey) }))}
             className="flex cursor-pointer items-center justify-between gap-2 rounded-[8px] border border-line bg-card py-1.5 px-3 text-sm text-ink outline-none transition-shadow focus:border-brand focus:ring-[3px] focus:ring-brand/15"
           />
         </div>

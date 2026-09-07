@@ -17,8 +17,7 @@ interface MetadataValue {
 }
 
 function authHeaders(): Record<string, string> {
-  const token = localStorage.getItem("token");
-  return token ? { Authorization: `Bearer ${token}` } : {};
+  return {};
 }
 
 // checkbox_group and tag values still serialize to the single `value` text
@@ -68,8 +67,7 @@ function FieldEditor({
   field,
   value,
   disabled,
-  onChange,
-}: {
+  onChange }: {
   field: MetadataValue;
   value: string;
   disabled: boolean;
@@ -316,10 +314,7 @@ const ResourceMetadata = forwardRef<
         body: JSON.stringify({
           values: Object.entries(draft).map(([fieldId, value]) => ({
             fieldId: Number(fieldId),
-            value,
-          })),
-        }),
-      });
+            value })) }) });
       if (!res.ok) throw new Error(`${res.status}`);
       const updated = (await res.json()) as MetadataValue[];
       setFields(updated);

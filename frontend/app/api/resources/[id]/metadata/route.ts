@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import db from '@/lib/db';
 import { requireAuth, canAccessAllTenants, actingTenantId } from '@/lib/session';
-import { canEditResourceMetadata, hasPermission } from '@/lib/permissions';
+import { canEditResourceMetadata, hasPermission, denyUnlessResourceAccess } from '@/lib/permissions';
 import { logAccess } from '@/lib/accessLog';
 
 const MAX_VALUE_LENGTH = 5000;
@@ -38,8 +38,7 @@ function shapeRows(rows: MetadataRow[]) {
     sortOrder: r.sort_order,
     options: r.options,
     required: r.required,
-    value: r.value,
-  }));
+    value: r.value }));
 }
 
 // Field visibility rule (this stage): a viewer sees global field definitions
@@ -92,32 +91,8 @@ export async function GET(req: NextRequest, ctx: { params: Promise<{ id: string 
   // denied; this is the same isolation logic, not a new weaker check.
   // cross-tenant users (super admin, or role-2 + can_access_all_tenants) bypass this.
   // Fail closed: no tenant (old token, or a data anomaly) means no query, zero access.
-  if (!canAccessAllTenants(user)) {
-    if (!user.tenantId) {
-      return NextResponse.json({ error: 'Access denied' }, { status: 403 });
-    }
-    const accessCheck = await db.query(
-      `WITH RECURSIVE root_finder AS (
-         SELECT c.id, c.parent_id
-         FROM collections c
-         INNER JOIN collection_resource cr ON cr.collection_id = c.id
-         WHERE cr.resource_id = $1
-         UNION ALL
-         SELECT c.id, c.parent_id
-         FROM collections c
-         INNER JOIN root_finder rf ON rf.parent_id = c.id
-         WHERE rf.parent_id IS NOT NULL
-       )
-       SELECT 1 FROM root_finder rf
-       INNER JOIN tenant_collection_access cca ON cca.collection_id = rf.id
-       WHERE cca.tenant_id = $2
-       LIMIT 1`,
-      [id, user.tenantId],
-    );
-    if (accessCheck.rowCount === 0) {
-      return NextResponse.json({ error: 'Access denied' }, { status: 403 });
-    }
-  }
+  const denied = await denyUnlessResourceAccess(user, id);
+  if (denied) return denied;
 
   // View signal: this is the single server-side call fired whenever a user
   // opens one specific asset's details — the MetadataDrawer (all roles) or
@@ -134,8 +109,7 @@ export async function GET(req: NextRequest, ctx: { params: Promise<{ id: string 
     tenantId: user.tenantId ?? null,
     resourceId: id,
     action: 'view',
-    metadata: { source: 'metadata' },
-  });
+    metadata: { source: 'metadata' } });
 
   // Field scope follows the acting tenant: a cross-tenant admin navigating as
   // tenant B sees global + B's fields, exactly what a member of B would see;

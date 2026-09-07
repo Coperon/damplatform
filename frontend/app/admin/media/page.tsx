@@ -3,6 +3,7 @@
 import { useEffect, useRef, useState } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
+import { getSessionClaims } from "@/lib/clientSession";
 import JSZip from "jszip";
 import AppShell from "@/components/AppShell";
 import MetadataDrawer from "@/components/MetadataDrawer";
@@ -48,14 +49,6 @@ interface MediaFile {
   collections: { id: string; name: string }[];
 }
 
-
-function parseToken(token: string): Record<string, unknown> | null {
-  try {
-    return JSON.parse(atob(token.split(".")[1]));
-  } catch {
-    return null;
-  }
-}
 
 function formatBytes(bytes: number): string {
   if (bytes < 1024) return `${bytes} B`;
@@ -187,16 +180,16 @@ export default function AdminMediaPage() {
 
   // Auth check on mount
   useEffect(() => {
-    const token = localStorage.getItem("token");
-    if (!token) { router.replace("/"); return; }
-    const payload = parseToken(token);
+    void (async () => {
+        const payload = await getSessionClaims();
+    if (!payload) { router.replace("/"); return; }
     // The media library is now tenant-scoped (GET /api/media, as of this
     // pass) — a tenant admin sees only resources their tenant can reach,
     // same tier as every other widened collection/resource/share surface.
     if (!payload?.canAdmin) { setNotAdmin(true); setAuthorized(true); return; }
     setIsSuperAdmin(payload?.roleName === "super_admin");
     setAuthorized(true);
-  }, [router]);
+  })();}, [router]);
 
   // Read the persisted view preference on mount only — never during render/SSR.
   useEffect(() => {
@@ -278,9 +271,7 @@ export default function AdminMediaPage() {
   // Fetches the media list with the current filters. Shared by the debounced
   // filter-change effect and by bulk actions that need an immediate refetch.
   async function fetchMedia() {
-    const token = localStorage.getItem("token");
-    if (!token) { router.replace("/"); return; }
-
+    
     const stamp = ++fetchCounterRef.current;
     setLoading(true);
     setFetchError(null);
@@ -296,7 +287,7 @@ export default function AdminMediaPage() {
 
     try {
       const res = await fetch(`/api/media?${params}`, {
-        headers: { Authorization: `Bearer ${token}` },
+        
       });
       if (stamp !== fetchCounterRef.current) return;
       if (!res.ok) throw new Error(t("media.error.loadFailed", { status: res.status }));
@@ -335,12 +326,10 @@ export default function AdminMediaPage() {
   // already have a generated thumbnail_storage_key, whenever the file list changes.
   useEffect(() => {
     if (!authorized || files.length === 0) return;
-    const token = localStorage.getItem("token");
-    if (!token) return;
 
     for (const f of files) {
       // Any file with a generated thumbnail (video, PDF, or now image)
-      // fetches that small derivative via /api/cover?key= — never the full
+      // fetches that small derivative via /api/cover?resourceId= — never the full
       // original. An image with no thumbnail yet falls back to the full
       // original via /api/download/[id] so its card isn't blank while
       // generation is in flight (or hasn't been triggered at all, for
@@ -359,11 +348,11 @@ export default function AdminMediaPage() {
       (async () => {
         try {
           const res = hasThumb
-            ? await fetch(`/api/cover?key=${encodeURIComponent(f.thumbnail_storage_key!)}`, {
-                headers: { Authorization: `Bearer ${token}` },
+            ? await fetch(`/api/cover?resourceId=${encodeURIComponent(f.id)}`, {
+                
               })
             : await fetch(`/api/download/${f.id}`, {
-                headers: { Authorization: `Bearer ${token}` },
+                
               });
           if (!res.ok) return;
           const body = await res.json();
@@ -397,9 +386,7 @@ export default function AdminMediaPage() {
     // never actually be reachable; it's here only so a tenant admin can
     // never silently create an Unassigned file through this handler.
     if (!isSuperAdmin && !uploadTargetCollectionId) return;
-    const token = localStorage.getItem("token");
-    if (!token) { router.replace("/"); return; }
-
+    
     setUploadStatus("uploading");
     setUploadSummary(null);
 
@@ -415,9 +402,8 @@ export default function AdminMediaPage() {
         // Step 1: presigned PUT URL
         const urlRes = await fetch("/api/upload/url", {
           method: "POST",
-          headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
-          body: JSON.stringify({ filename: file.name, contentType: file.type }),
-        });
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ filename: file.name, contentType: file.type }) });
         if (!urlRes.ok) throw new Error("url");
         const { uploadUrl, key } = await urlRes.json();
 
@@ -425,8 +411,7 @@ export default function AdminMediaPage() {
         const putRes = await fetch(uploadUrl, {
           method: "PUT",
           headers: { "Content-Type": file.type },
-          body: file,
-        });
+          body: file });
         if (!putRes.ok) throw new Error("minio");
 
         // Step 3: register in DB. uploadTargetCollectionId is required (and
@@ -434,15 +419,13 @@ export default function AdminMediaPage() {
         // leaves it unset still creates an Unassigned file, unchanged.
         const completeRes = await fetch("/api/upload/complete", {
           method: "POST",
-          headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
+          headers: { "Content-Type": "application/json" },
           body: JSON.stringify({
             key,
             filename: file.name,
             contentType: file.type,
             size: file.size,
-            ...(uploadTargetCollectionId ? { collectionId: uploadTargetCollectionId } : {}),
-          }),
-        });
+            ...(uploadTargetCollectionId ? { collectionId: uploadTargetCollectionId } : {}) }) });
         if (!completeRes.ok) throw new Error("complete");
         const resource = await completeRes.json();
         if (resource?.id) uploadedIds.push(resource.id);
@@ -452,9 +435,7 @@ export default function AdminMediaPage() {
         // the next list refresh.
         if (supportsGeneratedThumbnail(file.type) && resource?.id) {
           fetch(`/api/resources/${resource.id}/thumbnail`, {
-            method: "POST",
-            headers: { Authorization: `Bearer ${token}` },
-          }).catch(() => {});
+            method: "POST" }).catch(() => {});
         }
 
         succeeded++;
@@ -490,21 +471,17 @@ export default function AdminMediaPage() {
     // for a non-super-admin (see uploadTargetCollectionId), same reasoning
     // as handleUpload above.
     if (!isSuperAdmin && !uploadTargetCollectionId) return;
-    const token = localStorage.getItem("token");
-    if (!token) { router.replace("/"); return; }
-
+    
     setImportStatus("importing");
     setImportError(null);
 
     try {
       const res = await fetch("/api/upload/from-url", {
         method: "POST",
-        headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
+        headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           url,
-          ...(uploadTargetCollectionId ? { collectionId: uploadTargetCollectionId } : {}),
-        }),
-      });
+          ...(uploadTargetCollectionId ? { collectionId: uploadTargetCollectionId } : {}) }) });
       const data = await res.json().catch(() => null);
       if (!res.ok) throw new Error(data?.message ?? t("media.import.genericError"));
 
@@ -515,9 +492,7 @@ export default function AdminMediaPage() {
       // way in case that ever changes.
       if (data?.id && typeof data.mime_type === "string" && supportsGeneratedThumbnail(data.mime_type)) {
         fetch(`/api/resources/${data.id}/thumbnail`, {
-          method: "POST",
-          headers: { Authorization: `Bearer ${token}` },
-        }).catch(() => {});
+          method: "POST" }).catch(() => {});
       }
 
       setImportUrl("");
@@ -531,18 +506,14 @@ export default function AdminMediaPage() {
 
   async function handlePermanentDelete(fileId: string) {
     if (!confirm(t("media.bulk.deleteConfirm", { count: 1 }))) return;
-    const token = localStorage.getItem("token");
-    if (!token) { router.replace("/"); return; }
-
+    
     setOpenMenuId(null);
     setDeletingIds((prev) => new Set(prev).add(fileId));
     setDeleteErrors((prev) => ({ ...prev, [fileId]: "" }));
 
     try {
       const res = await fetch(`/api/resources/${fileId}`, {
-        method: "DELETE",
-        headers: { Authorization: `Bearer ${token}` },
-      });
+        method: "DELETE" });
       if (!res.ok) throw new Error(`${res.status}`);
       setFiles((prev) => prev.filter((f) => f.id !== fileId));
     } catch {
@@ -559,9 +530,7 @@ export default function AdminMediaPage() {
   async function handleRenameFile(fileId: string, currentFilename: string) {
     const newName = prompt(t("media.rename.prompt"), currentFilename)?.trim();
     if (!newName) return;
-    const token = localStorage.getItem("token");
-    if (!token) { router.replace("/"); return; }
-
+    
     setOpenMenuId(null);
     setRenamingIds((prev) => new Set(prev).add(fileId));
     setRenameErrors((prev) => ({ ...prev, [fileId]: "" }));
@@ -569,9 +538,8 @@ export default function AdminMediaPage() {
     try {
       const res = await fetch(`/api/resources/${fileId}`, {
         method: "PATCH",
-        headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
-        body: JSON.stringify({ originalFilename: newName }),
-      });
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ originalFilename: newName }) });
       if (!res.ok) throw new Error(`${res.status}`);
       const { original_filename } = await res.json();
       setFiles((prev) =>
@@ -589,18 +557,14 @@ export default function AdminMediaPage() {
   }
 
   async function handleGenerateThumbnail(fileId: string) {
-    const token = localStorage.getItem("token");
-    if (!token) { router.replace("/"); return; }
-
+    
     setOpenMenuId(null);
     setGeneratingThumbIds((prev) => new Set(prev).add(fileId));
     setThumbnailErrors((prev) => ({ ...prev, [fileId]: "" }));
 
     try {
       const res = await fetch(`/api/resources/${fileId}/thumbnail`, {
-        method: "POST",
-        headers: { Authorization: `Bearer ${token}` },
-      });
+        method: "POST" });
       if (!res.ok) throw new Error(`${res.status}`);
       const { thumbnailStorageKey } = await res.json();
       setFiles((prev) =>
@@ -618,18 +582,14 @@ export default function AdminMediaPage() {
   }
 
   async function handleRegenerateThumbnail(fileId: string) {
-    const token = localStorage.getItem("token");
-    if (!token) { router.replace("/"); return; }
-
+    
     setOpenMenuId(null);
     setGeneratingThumbIds((prev) => new Set(prev).add(fileId));
     setThumbnailErrors((prev) => ({ ...prev, [fileId]: "" }));
 
     try {
       const res = await fetch(`/api/resources/${fileId}/thumbnail?force=true`, {
-        method: "POST",
-        headers: { Authorization: `Bearer ${token}` },
-      });
+        method: "POST" });
       if (!res.ok) throw new Error(`${res.status}`);
       const { thumbnailStorageKey } = await res.json();
       setFiles((prev) =>
@@ -641,8 +601,8 @@ export default function AdminMediaPage() {
       // (loadedThumbIdsRef) so it won't refetch on its own — pull a fresh
       // presigned URL + blob directly so the card shows the new image.
       const coverRes = await fetch(
-        `/api/cover?key=${encodeURIComponent(thumbnailStorageKey)}`,
-        { headers: { Authorization: `Bearer ${token}` } },
+        `/api/cover?resourceId=${encodeURIComponent(fileId)}`,
+        {  },
       );
       if (coverRes.ok) {
         const { url } = await coverRes.json();
@@ -676,20 +636,11 @@ export default function AdminMediaPage() {
   async function openLightbox(f: MediaFile) {
     // Fire-and-forget "view" log — every lightbox open, any file type, not
     // just images; never awaited, never blocks opening the lightbox itself.
-    const viewToken = localStorage.getItem("token");
-    if (viewToken) {
-      fetch(`/api/resources/${f.id}/view`, {
-        method: "POST",
-        headers: { Authorization: `Bearer ${viewToken}` },
-      }).catch(() => {});
-    }
+    fetch(`/api/resources/${f.id}/view`, {
+      method: "POST" }).catch(() => {});
     if (f.mime_type.startsWith("image/")) {
-      const token = localStorage.getItem("token");
-      if (token) {
         try {
-          const res = await fetch(`/api/download/${f.id}`, {
-            headers: { Authorization: `Bearer ${token}` },
-          });
+          const res = await fetch(`/api/download/${f.id}`);
           if (res.ok) {
             const { downloadUrl } = await res.json();
             const imgRes = await fetch(downloadUrl);
@@ -705,16 +656,13 @@ export default function AdminMediaPage() {
         } catch {
           // fall through to the thumbnail fallback below
         }
-      }
     }
     setLightboxUrl(thumbnailUrls[f.id]);
     setLightboxAlt(f.original_filename);
   }
 
   async function handleAssignToCollection(fileId: string, collectionId: string) {
-    const token = localStorage.getItem("token");
-    if (!token) { router.replace("/"); return; }
-
+    
     setOpenMenuId(null);
     setAssigningIds((prev) => new Set(prev).add(fileId));
     setAssignErrors((prev) => ({ ...prev, [fileId]: "" }));
@@ -722,9 +670,8 @@ export default function AdminMediaPage() {
     try {
       const res = await fetch(`/api/resources/${fileId}/collections`, {
         method: "POST",
-        headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
-        body: JSON.stringify({ collectionId }),
-      });
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ collectionId }) });
       if (!res.ok) throw new Error(`${res.status}`);
 
       // Refetch rather than patch local state — the tree picker doesn't keep
@@ -762,9 +709,7 @@ export default function AdminMediaPage() {
   }
 
   async function handleBulkAddToCollection(collectionId: string) {
-    const token = localStorage.getItem("token");
-    if (!token) { router.replace("/"); return; }
-
+    
     const ids = Array.from(selectedIds);
     setBulkStatus("adding");
     setBulkSummary(null);
@@ -777,9 +722,8 @@ export default function AdminMediaPage() {
       try {
         const res = await fetch(`/api/resources/${ids[i]}/collections`, {
           method: "POST",
-          headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
-          body: JSON.stringify({ collectionId }),
-        });
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ collectionId }) });
         if (!res.ok) throw new Error(`${res.status}`);
         succeeded++;
       } catch {
@@ -802,9 +746,7 @@ export default function AdminMediaPage() {
   async function handleBulkDownload() {
     const ids = Array.from(selectedIds);
     if (ids.length === 0) return;
-    const token = localStorage.getItem("token");
-    if (!token) { router.replace("/"); return; }
-
+    
     setBulkStatus("zipping");
     setBulkProgress({ current: 0, total: ids.length });
     setBulkSummary(null);
@@ -820,7 +762,7 @@ export default function AdminMediaPage() {
 
       try {
         const res = await fetch(`/api/download/${fileId}`, {
-          headers: { Authorization: `Bearer ${token}` },
+          
         });
         if (!res.ok) throw new Error(`${res.status}`);
         const { downloadUrl } = await res.json();
@@ -850,8 +792,7 @@ export default function AdminMediaPage() {
     const zipBlob = await zip.generateAsync({
       type: "blob",
       compression: "DEFLATE",
-      compressionOptions: { level: 6 },
-    });
+      compressionOptions: { level: 6 } });
 
     const objectUrl = URL.createObjectURL(zipBlob);
     const a = document.createElement("a");
@@ -877,10 +818,7 @@ export default function AdminMediaPage() {
     const ids = Array.from(selectedIds);
     if (ids.length === 0) return;
     if (!confirm(t("media.bulk.deleteConfirm", { count: ids.length }))) return;
-
-    const token = localStorage.getItem("token");
-    if (!token) { router.replace("/"); return; }
-
+    
     setBulkStatus("deleting");
     setBulkSummary(null);
     setBulkProgress({ current: 0, total: ids.length });
@@ -891,9 +829,7 @@ export default function AdminMediaPage() {
     for (let i = 0; i < ids.length; i++) {
       try {
         const res = await fetch(`/api/resources/${ids[i]}`, {
-          method: "DELETE",
-          headers: { Authorization: `Bearer ${token}` },
-        });
+          method: "DELETE" });
         if (!res.ok) throw new Error(`${res.status}`);
         succeeded++;
       } catch {
@@ -1106,8 +1042,7 @@ export default function AdminMediaPage() {
               {t("media.upload.progress", {
                 current: uploadProgress.current,
                 total: uploadProgress.total,
-                filename: uploadProgress.filename,
-              })}
+                filename: uploadProgress.filename })}
             </p>
           )}
           {uploadStatus === "done" && uploadSummary && (

@@ -246,6 +246,141 @@ export async function tenantHasCollectionAccess(tenantId: string, collectionId: 
   return (result.rowCount ?? 0) > 0;
 }
 
+/** Shared CTE producing `accessible(collection_id)` for a tenant (any-depth grant). */
+export function sqlAccessibleCollectionsCte(tenantParam: number): string {
+  return `WITH RECURSIVE root_finder AS (
+             SELECT id AS original_id, id AS current_id, parent_id AS current_parent
+             FROM collections
+             UNION ALL
+             SELECT rf.original_id, c.id, c.parent_id
+             FROM root_finder rf
+             INNER JOIN collections c ON c.id = rf.current_parent
+             WHERE rf.current_parent IS NOT NULL
+           ),
+           accessible AS (
+             SELECT DISTINCT rf.original_id AS collection_id
+             FROM root_finder rf
+             INNER JOIN tenant_collection_access cca ON cca.collection_id = rf.current_id
+             WHERE cca.tenant_id = $${tenantParam}
+           )`;
+}
+
+/** Top-level granted collections: granted on self, no granted ancestor. */
+export function sqlTopLevelGrantedCollectionsCte(tenantParam: number): string {
+  return `WITH RECURSIVE root_finder AS (
+           SELECT
+             id          AS original_id,
+             id          AS current_id,
+             parent_id   AS current_parent,
+             0           AS depth
+           FROM collections
+           UNION ALL
+           SELECT
+             rf.original_id,
+             c.id,
+             c.parent_id,
+             rf.depth + 1
+           FROM root_finder rf
+           INNER JOIN collections c ON c.id = rf.current_parent
+           WHERE rf.current_parent IS NOT NULL
+         ),
+         ancestor_granted AS (
+           SELECT DISTINCT rf.original_id AS collection_id
+           FROM root_finder rf
+           INNER JOIN tenant_collection_access cca ON cca.collection_id = rf.current_id
+           WHERE cca.tenant_id = $${tenantParam} AND rf.depth >= 1
+         )`;
+}
+
+/** EXISTS (...) — resourceIdExpr must be a SQL identifier like r.id, never user input. */
+export function sqlResourceAccessibleExists(resourceIdExpr: string, tenantParam: number): string {
+  return `EXISTS (
+           WITH RECURSIVE root_finder AS (
+             SELECT col.id, col.parent_id
+             FROM collections col
+             INNER JOIN collection_resource cr3 ON cr3.collection_id = col.id
+             WHERE cr3.resource_id = ${resourceIdExpr}
+             UNION ALL
+             SELECT col.id, col.parent_id
+             FROM collections col
+             INNER JOIN root_finder rf ON rf.parent_id = col.id
+             WHERE rf.parent_id IS NOT NULL
+           )
+           SELECT 1 FROM root_finder rf
+           INNER JOIN tenant_collection_access cca ON cca.collection_id = rf.id
+           WHERE cca.tenant_id = $${tenantParam}
+           LIMIT 1
+         )`;
+}
+
+export async function tenantIdsForResource(resourceId: string): Promise<string[]> {
+  const result = await db.query<{ tenant_id: string }>(
+    `WITH RECURSIVE root_finder AS (
+       SELECT c.id, c.parent_id
+       FROM collections c
+       INNER JOIN collection_resource cr ON cr.collection_id = c.id
+       WHERE cr.resource_id = $1
+       UNION ALL
+       SELECT c.id, c.parent_id
+       FROM collections c
+       INNER JOIN root_finder rf ON rf.parent_id = c.id
+       WHERE rf.parent_id IS NOT NULL
+     )
+     SELECT DISTINCT cca.tenant_id
+     FROM root_finder rf
+     INNER JOIN tenant_collection_access cca ON cca.collection_id = rf.id`,
+    [resourceId],
+  );
+  return result.rows.map((row) => row.tenant_id);
+}
+
+export async function tenantIdsForCollection(collectionId: string): Promise<string[]> {
+  const result = await db.query<{ tenant_id: string }>(
+    `WITH RECURSIVE ancestors AS (
+       SELECT id, parent_id FROM collections WHERE id = $1
+       UNION ALL
+       SELECT c.id, c.parent_id
+       FROM collections c
+       INNER JOIN ancestors a ON a.parent_id = c.id
+     )
+     SELECT DISTINCT cca.tenant_id
+     FROM ancestors a
+     INNER JOIN tenant_collection_access cca ON cca.collection_id = a.id`,
+    [collectionId],
+  );
+  return result.rows.map((row) => row.tenant_id);
+}
+
+/** 403 Response if this user must not see the resource; null if access is allowed. */
+export async function denyUnlessResourceAccess(
+  user: JwtPayload,
+  resourceId: string,
+): Promise<Response | null> {
+  if (canAccessAllTenants(user)) return null;
+  if (!user.tenantId) {
+    return Response.json({ message: 'Access denied' }, { status: 403 });
+  }
+  if (!(await tenantHasResourceAccess(user.tenantId, resourceId))) {
+    return Response.json({ message: 'Access denied' }, { status: 403 });
+  }
+  return null;
+}
+
+/** 403 Response if this user must not see the collection; null if access is allowed. */
+export async function denyUnlessCollectionAccess(
+  user: JwtPayload,
+  collectionId: string,
+): Promise<Response | null> {
+  if (canAccessAllTenants(user)) return null;
+  if (!user.tenantId) {
+    return Response.json({ message: 'Access denied' }, { status: 403 });
+  }
+  if (!(await tenantHasCollectionAccess(user.tenantId, collectionId))) {
+    return Response.json({ message: 'Access denied' }, { status: 403 });
+  }
+  return null;
+}
+
 // Can this user author (read/write) per-asset metadata on `resourceId`?
 // Super admins: unconditionally yes. Everyone else with upload capability
 // (editors, and — Stage 6 — tenant admins, who also carry canUpload: true):

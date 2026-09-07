@@ -55,8 +55,7 @@ export interface CollectionTreePickerProps {
 }
 
 function authHeaders(): Record<string, string> {
-  const token = typeof window !== "undefined" ? localStorage.getItem("token") : null;
-  return token ? { Authorization: `Bearer ${token}` } : {};
+  return {};
 }
 
 async function fetchLevel(parentId: string | null): Promise<CollectionNode[]> {
@@ -107,8 +106,7 @@ export default function CollectionTreePicker({
   excludeSubtreeOf,
   disabled = false,
   placeholder,
-  className,
-}: CollectionTreePickerProps) {
+  className }: CollectionTreePickerProps) {
   const [open, setOpen] = useState(false);
   const [pos, setPos] = useState<{ top?: number; bottom?: number; left: number; width: number } | null>(null);
   const [cache, setCache] = useState<Record<string, LevelState>>({});
@@ -238,8 +236,7 @@ export default function CollectionTreePicker({
         expanded: false,
         disabled: false,
         loadingChildren: false,
-        loadErrored: false,
-      });
+        loadErrored: false });
     }
     function walk(key: string, depth: number, subtreeExcluded: boolean) {
       const level = cache[key];
@@ -256,8 +253,7 @@ export default function CollectionTreePicker({
           expanded: isExpanded,
           disabled: nodeSubtreeExcluded || (excludeIds?.includes(node.id) ?? false),
           loadingChildren: isExpanded && childLevel === "loading",
-          loadErrored: isExpanded && childLevel === "error",
-        });
+          loadErrored: isExpanded && childLevel === "error" });
         if (isExpanded && Array.isArray(childLevel)) {
           walk(node.id, depth + 1, nodeSubtreeExcluded);
         }

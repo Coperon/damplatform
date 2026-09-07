@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import db from '@/lib/db';
 import { validateShareToken, isResourceInShareScope, logShareAccess } from '@/lib/shares';
 import { getDownloadUrl } from '@/lib/storage';
+import { rateLimitOr429 } from '@/lib/rateLimit';
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
@@ -9,6 +10,9 @@ export async function GET(
   req: NextRequest,
   ctx: { params: Promise<{ token: string; resourceId: string }> },
 ) {
+  const limited = await rateLimitOr429(req, 'share-file', 120, 60);
+  if (limited) return limited;
+
   const { token, resourceId } = await ctx.params;
 
   if (!UUID_RE.test(resourceId)) {

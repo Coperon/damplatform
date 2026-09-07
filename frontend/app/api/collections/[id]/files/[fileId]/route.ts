@@ -1,6 +1,6 @@
 import { canAccessAllTenants } from '@/lib/session';
 import { AppError } from '@/lib/errors';
-import { requirePermission } from '@/lib/permissions';
+import { requirePermission, tenantHasCollectionAccess } from '@/lib/permissions';
 import db from '@/lib/db';
 
 // Fix (separate from the Stage 6 tenant-admin widening pass): this route was
@@ -28,26 +28,7 @@ export async function DELETE(
     // bypass this — everyone else must pass the check.
     // Fail closed: no tenant (old token, or a data anomaly) means no query, zero access.
     if (!canAccessAllTenants(user)) {
-      if (!user.tenantId) {
-        return Response.json({ message: 'Access to collection denied' }, { status: 403 });
-      }
-      const accessCheck = await db.query(
-        `WITH RECURSIVE root_finder AS (
-           SELECT id, parent_id FROM collections WHERE id = $1
-           UNION ALL
-           SELECT c.id, c.parent_id
-           FROM collections c
-           INNER JOIN root_finder rf ON rf.parent_id = c.id
-           WHERE rf.parent_id IS NOT NULL
-         )
-         SELECT 1 FROM root_finder rf
-         INNER JOIN tenant_collection_access cca ON cca.collection_id = rf.id
-         WHERE cca.tenant_id = $2
-         LIMIT 1`,
-        [id, user.tenantId],
-      );
-
-      if (accessCheck.rowCount === 0) {
+      if (!user.tenantId || !(await tenantHasCollectionAccess(user.tenantId, id))) {
         return Response.json({ message: 'Access to collection denied' }, { status: 403 });
       }
     }

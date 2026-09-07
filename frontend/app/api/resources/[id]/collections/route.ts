@@ -3,8 +3,7 @@ import { AppError } from '@/lib/errors';
 import {
   tenantHasResourceAccess,
   tenantHasCollectionAccess,
-  requirePermission,
-} from '@/lib/permissions';
+  requirePermission } from '@/lib/permissions';
 import db from '@/lib/db';
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;

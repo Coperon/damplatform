@@ -72,8 +72,7 @@ async function fetchTenantsWithGrantState(executor: Executor, collectionId: stri
     granted: grantedIds.has(c.id),
     // Only set when there's no own grant — context for an otherwise-ungranted
     // tenant that can still see this collection via an ancestor.
-    inheritedFrom: grantedIds.has(c.id) ? null : inherited.get(c.id) ?? null,
-  }));
+    inheritedFrom: grantedIds.has(c.id) ? null : inherited.get(c.id) ?? null }));
 }
 
 // Tenant-admin view: the exact same shape as fetchTenantsWithGrantState's
@@ -100,8 +99,7 @@ async function fetchOwnTenantGrantState(executor: Executor, collectionId: string
       id: tenant.id,
       name: tenant.name,
       granted: isGranted,
-      inheritedFrom: isGranted ? null : inherited.get(tenant.id) ?? null,
-    },
+      inheritedFrom: isGranted ? null : inherited.get(tenant.id) ?? null },
   ];
 }
 

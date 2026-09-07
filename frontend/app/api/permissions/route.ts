@@ -6,8 +6,7 @@ import {
   VIEWER_PERMISSION_KEYS,
   EDITOR_DEFAULTS,
   VIEWER_DEFAULTS,
-  type PermissionKey,
-} from '@/lib/permissions';
+  type PermissionKey } from '@/lib/permissions';
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
@@ -93,8 +92,7 @@ export async function GET(req: NextRequest) {
     tenantId,
     tenantName,
     editor: buildRows(3, EDITOR_PERMISSION_KEYS),
-    viewer: buildRows(4, VIEWER_PERMISSION_KEYS),
-  });
+    viewer: buildRows(4, VIEWER_PERMISSION_KEYS) });
 }
 
 export async function PUT(req: NextRequest) {
@@ -149,8 +147,7 @@ export async function PUT(req: NextRequest) {
     key: permissionKey,
     default: defaultForRole(roleId, permissionKey),
     override: enabled,
-    enabled,
-  });
+    enabled });
 }
 
 export async function DELETE(req: NextRequest) {

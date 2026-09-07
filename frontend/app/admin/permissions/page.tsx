@@ -3,6 +3,7 @@
 import { useEffect, useState } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
+import { getSessionClaims } from "@/lib/clientSession";
 import AppShell from "@/components/AppShell";
 import Select from "@/components/Select";
 import { useTranslation } from "@/lib/i18n";
@@ -45,21 +46,12 @@ const DISPLAY_ORDER: { key: string; labelKey: string; editor: boolean; viewer: b
   { key: "view_metadata", labelKey: "permissions.action.viewMetadata", editor: false, viewer: true },
 ];
 
-function parseToken(token: string): Record<string, unknown> | null {
-  try {
-    return JSON.parse(atob(token.split(".")[1]));
-  } catch {
-    return null;
-  }
-}
-
 
 function Toggle({
   checked,
   disabled,
   onClick,
-  label,
-}: {
+  label }: {
   checked: boolean;
   disabled?: boolean;
   onClick: () => void;
@@ -89,8 +81,7 @@ function PermissionCell({
   roleId,
   tenantId,
   isSuperAdmin,
-  onChanged,
-}: {
+  onChanged }: {
   row: PermissionRow | undefined;
   roleId: 3 | 4;
   tenantId: string;
@@ -107,21 +98,17 @@ function PermissionCell({
 
   async function handleToggle() {
     if (!row) return;
-    const token = localStorage.getItem("token");
-    if (!token) return;
     setBusy(true);
     setError(null);
     try {
       const res = await fetch(`/api/permissions${isSuperAdmin ? `?tenantId=${tenantId}` : ""}`, {
         method: "PUT",
-        headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+        headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           tenantId: isSuperAdmin ? tenantId : undefined,
           roleId,
           permissionKey: row.key,
-          enabled: !row.enabled,
-        }),
-      });
+          enabled: !row.enabled }) });
       const body = await res.json().catch(() => ({}));
       if (!res.ok) {
         setError((body as { error?: string }).error ?? t("common.error.generic", { status: res.status }));
@@ -159,12 +146,10 @@ export default function PermissionsPage() {
   const [resetAllError, setResetAllError] = useState<string | null>(null);
 
   function loadMatrix(tenantId?: string) {
-    const token = localStorage.getItem("token");
-    if (!token) return;
     setLoading(true);
     setLoadError(null);
     const qs = tenantId ? `?tenantId=${tenantId}` : "";
-    fetch(`/api/permissions${qs}`, { headers: { Authorization: `Bearer ${token}` } })
+    fetch(`/api/permissions${qs}`, {  })
       .then((r) => {
         if (!r.ok) throw new Error(t("permissions.error.loadHttp", { status: r.status }));
         return r.json() as Promise<MatrixResponse>;
@@ -177,12 +162,9 @@ export default function PermissionsPage() {
   }
 
   useEffect(() => {
-    const token = localStorage.getItem("token");
-    if (!token) {
-      router.replace("/");
-      return;
-    }
-    const payload = parseToken(token);
+    void (async () => {
+    const payload = await getSessionClaims();
+    if (!payload) { router.replace("/"); return; }
     if (!payload?.canAdmin) {
       setNotAdmin(true);
       setAuthorized(true);
@@ -193,7 +175,7 @@ export default function PermissionsPage() {
     setAuthorized(true);
 
     if (superAdmin) {
-      fetch("/api/tenants", { headers: { Authorization: `Bearer ${token}` } })
+      fetch("/api/tenants", {  })
         .then((r) => (r.ok ? r.json() : []))
         .then((rows: Tenant[]) => {
           setTenants(rows);
@@ -209,7 +191,7 @@ export default function PermissionsPage() {
       loadMatrix();
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [router]);
+  })();}, [router]);
 
   function handleTenantChange(tenantId: string) {
     setSelectedTenantId(tenantId);
@@ -222,8 +204,7 @@ export default function PermissionsPage() {
       const key = roleId === 3 ? "editor" : "viewer";
       return {
         ...prev,
-        [key]: prev[key].map((r) => (r.key === updated.key ? updated : r)),
-      };
+        [key]: prev[key].map((r) => (r.key === updated.key ? updated : r)) };
     });
   }
 
@@ -233,17 +214,13 @@ export default function PermissionsPage() {
       t("permissions.resetAll.confirm", { tenant: matrix.tenantName }),
     );
     if (!ok) return;
-    const token = localStorage.getItem("token");
-    if (!token) return;
     setResettingAll(true);
     setResetAllError(null);
     try {
       const params = new URLSearchParams({ all: "true" });
       if (isSuperAdmin) params.set("tenantId", matrix.tenantId);
       const res = await fetch(`/api/permissions?${params.toString()}`, {
-        method: "DELETE",
-        headers: { Authorization: `Bearer ${token}` },
-      });
+        method: "DELETE" });
       if (!res.ok) {
         const body = await res.json().catch(() => ({}));
         setResetAllError((body as { error?: string }).error ?? t("common.error.generic", { status: res.status }));
@@ -254,8 +231,7 @@ export default function PermissionsPage() {
           ? {
               ...prev,
               editor: prev.editor.map((r) => ({ ...r, override: null, enabled: r.default })),
-              viewer: prev.viewer.map((r) => ({ ...r, override: null, enabled: r.default })),
-            }
+              viewer: prev.viewer.map((r) => ({ ...r, override: null, enabled: r.default })) }
           : prev,
       );
     } catch {

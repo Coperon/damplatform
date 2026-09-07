@@ -3,6 +3,7 @@
 import { useEffect, useRef, useState } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
+import { getSessionClaims } from "@/lib/clientSession";
 import AppShell from "@/components/AppShell";
 import Select from "@/components/Select";
 import { useTranslation } from "@/lib/i18n";
@@ -64,20 +65,11 @@ const TENANT_ADMIN_ASSIGNABLE_ROLE_IDS = new Set([3, 4]);
 // `null` (no tenant) at the change handler, never stored as-is.
 const NONE_TENANT = "__none__";
 
-function parseToken(token: string): Record<string, unknown> | null {
-  try {
-    return JSON.parse(atob(token.split(".")[1]));
-  } catch {
-    return null;
-  }
-}
-
 function formatDate(iso: string): string {
   return new Date(iso).toLocaleDateString(undefined, {
     year: "numeric",
     month: "short",
-    day: "numeric",
-  });
+    day: "numeric" });
 }
 
 // Same derivation as the AppShell account menu — keeps avatar initials consistent app-wide.
@@ -93,13 +85,13 @@ function getInitials(value: string | null): string | null {
   return null;
 }
 
-async function fetchUsers(token: string, roleId: string, tenantId: string, t: TFunc): Promise<User[]> {
+async function fetchUsers(roleId: string, tenantId: string, t: TFunc): Promise<User[]> {
   const params = new URLSearchParams();
   if (roleId) params.set("roleId", roleId);
   if (tenantId) params.set("tenantId", tenantId);
   const qs = params.toString();
   const res = await fetch(`/api/users${qs ? `?${qs}` : ""}`, {
-    headers: { Authorization: `Bearer ${token}` },
+    
   });
   if (!res.ok) throw new Error(t("users.error.loadUsersHttp", { status: res.status }));
   return res.json() as Promise<User[]>;
@@ -186,12 +178,9 @@ export default function AdminUsersPage() {
   const skipNextFilterFetch = useRef(true);
 
   useEffect(() => {
-    const token = localStorage.getItem("token");
-    if (!token) {
-      router.replace("/");
-      return;
-    }
-    const payload = parseToken(token);
+    void (async () => {
+    const payload = await getSessionClaims();
+    if (!payload) { router.replace("/"); return; }
     if (!payload?.canAdmin) {
       setNotAdmin(true);
       setAuthorized(true);
@@ -203,13 +192,13 @@ export default function AdminUsersPage() {
     setSelfId(String(payload.sub));
     setAuthorized(true);
 
-    const headers = { Authorization: `Bearer ${token}` };
+    const headers = { };
 
     // GET /api/tenants is super-admin-only (Stage 6) — a tenant admin
     // can't set/change anyone's tenant anyway, so the Company column just
     // shows read-only text for them and this fetch is skipped entirely.
     Promise.all([
-      fetchUsers(token, "", "", t),
+      fetchUsers("", "", t),
       superAdmin
         ? fetch("/api/tenants", { headers }).then((r) => {
             if (!r.ok) throw new Error(t("users.error.loadTenantsHttp", { status: r.status }));
@@ -242,7 +231,7 @@ export default function AdminUsersPage() {
         setLoadError(err instanceof Error ? err.message : t("common.error.loadFailed"));
       })
       .finally(() => setLoading(false));
-  }, [router]);
+  })();}, [router]);
 
   // Tenant admin's own pending invites — fetched separately from the main
   // load above since it's conditional on tier (a super admin never runs
@@ -251,11 +240,9 @@ export default function AdminUsersPage() {
     // Admins lacking the flag skip this too — their invite section is
     // hidden (they can't invite), so fetching its data would be wasted work.
     if (!authorized || notAdmin || isSuperAdmin || !canInviteSelf) return;
-    const token = localStorage.getItem("token");
-    if (!token) return;
     setInvitationsLoading(true);
     setInvitationsError(null);
-    fetch("/api/invitations", { headers: { Authorization: `Bearer ${token}` } })
+    fetch("/api/invitations", {  })
       .then((r) => {
         if (!r.ok) throw new Error(t("common.error.loadInvitationsHttp", { status: r.status }));
         return r.json() as Promise<{ invitations: Invitation[] }>;
@@ -275,12 +262,10 @@ export default function AdminUsersPage() {
       return;
     }
     if (!authorized || notAdmin) return;
-    const token = localStorage.getItem("token");
-    if (!token) return;
 
     setLoading(true);
     setLoadError(null);
-    fetchUsers(token, roleFilter, tenantFilter, t)
+    fetchUsers(roleFilter, tenantFilter, t)
       .then((usersData) => {
         setUsers(usersData);
         setPendingTenants((prev) => {
@@ -316,8 +301,6 @@ export default function AdminUsersPage() {
   }, [roleFilter, tenantFilter, authorized, notAdmin]);
 
   async function handleSave(userId: string) {
-    const token = localStorage.getItem("token");
-    if (!token) return;
 
     const u = users.find((x) => x.id === userId);
     if (!u) return;
@@ -343,18 +326,14 @@ export default function AdminUsersPage() {
       const res = await fetch(`/api/users/${userId}`, {
         method: "PATCH",
         headers: {
-          "Content-Type": "application/json",
-          Authorization: `Bearer ${token}`,
-        },
-        body: JSON.stringify(body),
-      });
+          "Content-Type": "application/json" },
+        body: JSON.stringify(body) });
 
       if (!res.ok) {
         const errBody = await res.json().catch(() => ({}));
         setSaveErrors((prev) => ({
           ...prev,
-          [userId]: (errBody as { error?: string }).error ?? t("common.error.generic", { status: res.status }),
-        }));
+          [userId]: (errBody as { error?: string }).error ?? t("common.error.generic", { status: res.status }) }));
         return;
       }
 
@@ -380,8 +359,7 @@ export default function AdminUsersPage() {
             role_name: role?.name ?? x.role_name,
             name: updated.name,
             can_access_all_tenants: updated.can_access_all_tenants,
-            can_invite: updated.can_invite,
-          };
+            can_invite: updated.can_invite };
         }),
       );
       setPendingNames((prev) => ({ ...prev, [userId]: updated.name ?? "" }));
@@ -404,8 +382,6 @@ export default function AdminUsersPage() {
   // dirty/pending state: a delete has nothing to stage, it either happens or
   // it doesn't.
   async function handleDelete(u: User) {
-    const token = localStorage.getItem("token");
-    if (!token) return;
 
     if (!window.confirm(t("users.confirm.deleteUser", { email: u.email }))) {
       return;
@@ -416,16 +392,13 @@ export default function AdminUsersPage() {
 
     try {
       const res = await fetch(`/api/users/${u.id}`, {
-        method: "DELETE",
-        headers: { Authorization: `Bearer ${token}` },
-      });
+        method: "DELETE" });
 
       if (!res.ok) {
         const errBody = await res.json().catch(() => ({}));
         setDeleteErrors((prev) => ({
           ...prev,
-          [u.id]: (errBody as { error?: string }).error ?? t("common.error.generic", { status: res.status }),
-        }));
+          [u.id]: (errBody as { error?: string }).error ?? t("common.error.generic", { status: res.status }) }));
         return;
       }
 
@@ -447,8 +420,6 @@ export default function AdminUsersPage() {
 
   async function handleInvite(e: React.FormEvent) {
     e.preventDefault();
-    const token = localStorage.getItem("token");
-    if (!token) return;
 
     const email = inviteEmail.trim();
     if (!email) {
@@ -465,9 +436,8 @@ export default function AdminUsersPage() {
       // overridden anyway), so this page never even offers a picker.
       const res = await fetch("/api/invitations", {
         method: "POST",
-        headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
-        body: JSON.stringify({ email, roleId: inviteRoleId }),
-      });
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ email, roleId: inviteRoleId }) });
       const body = await res.json().catch(() => ({}));
       if (!res.ok) {
         setInviteError((body as { error?: string }).error ?? t("common.error.generic", { status: res.status }));
@@ -485,21 +455,16 @@ export default function AdminUsersPage() {
   }
 
   async function handleRevokeInvite(invitation: Invitation) {
-    const token = localStorage.getItem("token");
-    if (!token) return;
     setRevokingInviteIds((prev) => new Set(prev).add(invitation.id));
     setRevokeInviteErrors((prev) => { const n = { ...prev }; delete n[invitation.id]; return n; });
     try {
       const res = await fetch(`/api/invitations/${invitation.id}`, {
-        method: "DELETE",
-        headers: { Authorization: `Bearer ${token}` },
-      });
+        method: "DELETE" });
       if (!res.ok) {
         const errBody = await res.json().catch(() => ({}));
         setRevokeInviteErrors((prev) => ({
           ...prev,
-          [invitation.id]: (errBody as { error?: string }).error ?? t("common.error.generic", { status: res.status }),
-        }));
+          [invitation.id]: (errBody as { error?: string }).error ?? t("common.error.generic", { status: res.status }) }));
         return;
       }
       setInvitations((prev) => prev.filter((i) => i.id !== invitation.id));
@@ -781,14 +746,12 @@ export default function AdminUsersPage() {
                           style={{
                             backgroundColor: pendingAllTenantsFlag
                               ? "var(--color-brand)"
-                              : "var(--color-input-border)",
-                          }}
+                              : "var(--color-input-border)" }}
                         >
                           <span
                             className="inline-block h-3.5 w-3.5 transform rounded-full bg-card shadow transition-transform"
                             style={{
-                              transform: pendingAllTenantsFlag ? "translateX(18px)" : "translateX(3px)",
-                            }}
+                              transform: pendingAllTenantsFlag ? "translateX(18px)" : "translateX(3px)" }}
                           />
                         </button>
                       ) : (
@@ -829,14 +792,12 @@ export default function AdminUsersPage() {
                           style={{
                             backgroundColor: pendingInviteFlag
                               ? "var(--color-brand)"
-                              : "var(--color-input-border)",
-                          }}
+                              : "var(--color-input-border)" }}
                         >
                           <span
                             className="inline-block h-3.5 w-3.5 transform rounded-full bg-card shadow transition-transform"
                             style={{
-                              transform: pendingInviteFlag ? "translateX(18px)" : "translateX(3px)",
-                            }}
+                              transform: pendingInviteFlag ? "translateX(18px)" : "translateX(3px)" }}
                           />
                         </button>
                       ) : (

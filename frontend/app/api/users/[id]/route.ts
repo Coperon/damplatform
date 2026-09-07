@@ -225,9 +225,7 @@ export async function PATCH(req: NextRequest, ctx: { params: Promise<{ id: strin
       metadata: {
         targetUserId: result.rows[0].id,
         targetEmail: result.rows[0].email,
-        newValue: allTenantsFlagChange,
-      },
-    });
+        newValue: allTenantsFlagChange } });
   }
 
   // Same audit shape as all_tenants_flag_change above — fire-and-forget, only
@@ -242,9 +240,7 @@ export async function PATCH(req: NextRequest, ctx: { params: Promise<{ id: strin
       metadata: {
         targetUserId: result.rows[0].id,
         targetEmail: result.rows[0].email,
-        newValue: inviteFlagChange,
-      },
-    });
+        newValue: inviteFlagChange } });
   }
 
   return NextResponse.json(result.rows[0]);
@@ -349,9 +345,7 @@ export async function DELETE(req: NextRequest, ctx: { params: Promise<{ id: stri
         targetEmail: target.email,
         targetName: target.name,
         targetRoleId: target.role_id,
-        targetTenantId: target.tenant_id,
-      },
-    });
+        targetTenantId: target.tenant_id } });
 
     return NextResponse.json({ ok: true });
   } catch (err) {

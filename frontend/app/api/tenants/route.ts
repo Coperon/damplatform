@@ -129,8 +129,7 @@ export async function GET(req: NextRequest) {
     id: row.id,
     name: row.name,
     userCount: row.user_count,
-    hasAdmin: row.has_admin,
-  }));
+    hasAdmin: row.has_admin }));
 
   return NextResponse.json({ tenants });
 }

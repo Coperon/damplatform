@@ -35,6 +35,20 @@ const nextConfig: NextConfig = {
   // unescaped, "[id]" parses as a character class matching a single "i" or
   // "d", the key matches nothing, and the includes are silently dropped with
   // no build error. (This escaping is what Next's own output.md example does.)
+  async headers() {
+    return [
+      {
+        source: "/:path*",
+        headers: [
+          { key: "X-Content-Type-Options", value: "nosniff" },
+          { key: "Referrer-Policy", value: "strict-origin-when-cross-origin" },
+          { key: "X-Frame-Options", value: "DENY" },
+          { key: "Permissions-Policy", value: "camera=(), microphone=(), geolocation=()" },
+        ],
+      },
+    ];
+  },
+
   outputFileTracingIncludes: {
     "/api/resources/\\[id\\]/thumbnail": [
       "./node_modules/ffmpeg-static/**",

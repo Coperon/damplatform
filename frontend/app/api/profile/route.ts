@@ -59,8 +59,7 @@ export async function GET(req: NextRequest) {
     roleId: row.role_id,
     roleName: row.role_name,
     tenant,
-    pendingEmailChange,
-  });
+    pendingEmailChange });
 }
 
 // Name only — password goes through the existing

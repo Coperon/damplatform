@@ -1,36 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import db from '@/lib/db';
 import { requireAuth, canAccessAllTenants } from '@/lib/session';
-
-// Same cascade ancestor access check used by GET /api/collections/[id] and the
-// files/download routes: walk up from `collectionId` and check whether the
-// user's tenant has a grant anywhere in that chain — at any level, not just
-// the root (Stage 88: was root-only). Reused verbatim (parameterized per id)
-// rather than re-derived, so ancestor accessibility never drifts from the real
-// rule. Called once per ancestor below, each with its own starting id, so a
-// grant partway up the chain (e.g. on "Lamps") correctly makes only Lamps and
-// its own descendants accessible — not the collections above Lamps.
-// `tenantId === null` (no tenant) short-circuits to false — never passed through
-// to a query, since `tenant_id = NULL` isn't a valid grant to check.
-async function isAccessible(collectionId: string, tenantId: string | null): Promise<boolean> {
-  if (!tenantId) return false;
-  const result = await db.query(
-    `WITH RECURSIVE root_finder AS (
-       SELECT id, parent_id FROM collections WHERE id = $1
-       UNION ALL
-       SELECT c.id, c.parent_id
-       FROM collections c
-       INNER JOIN root_finder rf ON rf.parent_id = c.id
-       WHERE rf.parent_id IS NOT NULL
-     )
-     SELECT 1 FROM root_finder rf
-     INNER JOIN tenant_collection_access cca ON cca.collection_id = rf.id
-     WHERE cca.tenant_id = $2
-     LIMIT 1`,
-    [collectionId, tenantId],
-  );
-  return (result.rowCount ?? 0) > 0;
-}
+import { tenantHasCollectionAccess } from '@/lib/permissions';
 
 export async function GET(req: NextRequest, ctx: { params: Promise<{ id: string }> }) {
   const user = requireAuth(req);
@@ -46,7 +17,9 @@ export async function GET(req: NextRequest, ctx: { params: Promise<{ id: string 
   // cross-tenant users (super admin, or role-2 + can_access_all_tenants) bypass this —
   // everyone else must pass the same tenant-scoped check.
   if (!canAccessAllTenants(user)) {
-    const accessible = await isAccessible(id, user.tenantId ?? null);
+    const accessible = user.tenantId
+      ? await tenantHasCollectionAccess(user.tenantId, id)
+      : false;
     if (!accessible) {
       return NextResponse.json({ error: 'Access denied' }, { status: 403 });
     }
@@ -74,7 +47,9 @@ export async function GET(req: NextRequest, ctx: { params: Promise<{ id: string 
 
   const ancestors = await Promise.all(
     chain.rows.map(async (row) => {
-      const accessible = await isAccessible(row.id, user.tenantId ?? null);
+      const accessible = user.tenantId
+        ? await tenantHasCollectionAccess(user.tenantId, row.id)
+        : false;
       return { id: row.id, name: accessible ? row.name : null, accessible };
     }),
   );

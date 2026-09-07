@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import db from '@/lib/db';
 import { requireAdmin, isSuperAdmin, actingTenantId } from '@/lib/session';
 import { AppError } from '@/lib/errors';
+import { sqlResourceAccessibleExists } from '@/lib/permissions';
 
 const MAX_Q_LEN = 100;
 // Whitelisted page sizes — pageSize is validated against this list, never
@@ -20,8 +21,7 @@ const SORT_MAP: Record<string, string> = {
   // LOWER(...) rather than a case-insensitive collation — no COLLATE is set up
   // elsewhere in the schema, and this needs no new dependency or migration.
   name_asc: 'LOWER(r.original_filename) ASC',
-  name_desc: 'LOWER(r.original_filename) DESC',
-};
+  name_desc: 'LOWER(r.original_filename) DESC' };
 
 export async function GET(req: NextRequest) {
   const user = requireAdmin(req);
@@ -65,25 +65,7 @@ export async function GET(req: NextRequest) {
       }
       params.push(effectiveTenant);
       const n = params.length;
-      where.push(
-        `EXISTS (
-           WITH RECURSIVE root_finder AS (
-             SELECT col.id, col.parent_id
-             FROM collections col
-             INNER JOIN collection_resource cr3 ON cr3.collection_id = col.id
-             WHERE cr3.resource_id = r.id
-             UNION ALL
-             SELECT col.id, col.parent_id
-             FROM collections col
-             INNER JOIN root_finder rf ON rf.parent_id = col.id
-             WHERE rf.parent_id IS NOT NULL
-           )
-           SELECT 1 FROM root_finder rf
-           INNER JOIN tenant_collection_access cca ON cca.collection_id = rf.id
-           WHERE cca.tenant_id = $${n}
-           LIMIT 1
-         )`,
-      );
+      where.push(sqlResourceAccessibleExists('r.id', n));
     }
 
     // type filter — the MIME prefix strings are hardcoded here, never from user input

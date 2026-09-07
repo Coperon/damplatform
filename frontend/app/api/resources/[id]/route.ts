@@ -5,8 +5,7 @@ import { deleteObject } from '@/lib/storage';
 import {
   canEditResourceMetadata,
   tenantHasResourceAccess,
-  requirePermission,
-} from '@/lib/permissions';
+  requirePermission } from '@/lib/permissions';
 
 export async function GET(req: NextRequest, ctx: { params: Promise<{ id: string }> }) {
   const user = requireAuth(req);

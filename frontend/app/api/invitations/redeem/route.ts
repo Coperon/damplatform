@@ -5,6 +5,9 @@ import { validatePasswordStrength, findByEmail } from '@/lib/users';
 import { AppError } from '@/lib/errors';
 import { validateInvitationToken } from '@/lib/invitations';
 import { mintSessionToken } from '@/lib/auth';
+import { rateLimitOr429 } from '@/lib/rateLimit';
+import { cookies } from 'next/headers';
+import { SESSION_COOKIE, sessionCookieOptions } from '@/lib/sessionCookie';
 
 // Public, no auth — completes an invitation and logs the redeemed user in.
 // On success it mints a session token via lib/auth.ts's mintSessionToken —
@@ -13,6 +16,9 @@ import { mintSessionToken } from '@/lib/auth';
 // A failed or reused redemption (any return before the transaction commits)
 // never reaches the mint call and never produces a session.
 export async function POST(req: NextRequest) {
+  const limited = await rateLimitOr429(req, 'invite-redeem', 10, 15 * 60);
+  if (limited) return limited;
+
   let body: Record<string, unknown>;
   try {
     const raw = await req.json();
@@ -125,9 +131,11 @@ export async function POST(req: NextRequest) {
   // never drift from what a normal login would produce for this account.
   const newUser = await findByEmail(email);
   const { access_token } = mintSessionToken(newUser!);
+  const jar = await cookies();
+  jar.set(SESSION_COOKIE, access_token, sessionCookieOptions());
 
   return NextResponse.json(
-    { message: 'Account created.', email, access_token },
+    { message: 'Account created.', email },
     { status: 201 },
   );
 }

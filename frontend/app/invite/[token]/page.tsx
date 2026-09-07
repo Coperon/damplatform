@@ -183,8 +183,7 @@ export default function InvitePage() {
         headers: { "Content-Type": "application/json" },
         // No email field — the server takes it from the invite, never the
         // request body.
-        body: JSON.stringify({ token, name: trimmedName, phone, password }),
-      });
+        body: JSON.stringify({ token, name: trimmedName, phone, password }) });
       const body = await res.json().catch(() => ({}));
 
       if (res.ok) {
@@ -192,9 +191,6 @@ export default function InvitePage() {
         // claims/signing, see lib/auth.ts's mintSessionToken) — store it the
         // same way app/page.tsx's login form does and go straight into the
         // app instead of sending the user back to sign in manually.
-        if (body.access_token) {
-          localStorage.setItem("token", body.access_token);
-        }
         setStatus("success");
         setTimeout(() => router.push("/home"), 1200);
         return;
@@ -233,8 +229,7 @@ export default function InvitePage() {
           className="pointer-events-none absolute bottom-0 left-0 z-[5] hidden h-[320px] w-[480px] lg:block"
           style={{
             background:
-              "radial-gradient(circle at 0% 100%, rgba(255,255,255,0.4) 0%, rgba(255,255,255,0.18) 35%, rgba(255,255,255,0) 70%)",
-          }}
+              "radial-gradient(circle at 0% 100%, rgba(255,255,255,0.4) 0%, rgba(255,255,255,0.18) 35%, rgba(255,255,255,0) 70%)" }}
         />
 
         <div
@@ -286,8 +281,7 @@ export default function InvitePage() {
               <p className="mt-2 text-sm text-slate">
                 {interpolateJSX(t("invite.form.invitedTo"), {
                   tenant: <span className="font-medium text-ink">{invite.tenantName}</span>,
-                  role: <span className="font-medium text-ink">{capitalize(invite.roleName)}</span>,
-                })}
+                  role: <span className="font-medium text-ink">{capitalize(invite.roleName)}</span> })}
               </p>
 
               {/* Email — locked/prefilled from validate. Deliberately not an

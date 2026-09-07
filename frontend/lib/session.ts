@@ -1,4 +1,5 @@
 import jwt from 'jsonwebtoken';
+import { readSessionToken } from './sessionCookie';
 
 export interface JwtPayload {
   sub: string;
@@ -21,11 +22,10 @@ export interface JwtPayload {
 }
 
 function verifyToken(request: Request): JwtPayload | Response {
-  const auth = request.headers.get('authorization');
-  if (!auth || !auth.startsWith('Bearer ')) {
+  const token = readSessionToken(request);
+  if (!token) {
     return Response.json({ message: 'No token provided' }, { status: 401 });
   }
-  const token = auth.slice(7);
   try {
     return jwt.verify(token, process.env.JWT_SECRET!, { algorithms: ['HS256'] }) as JwtPayload;
   } catch {
@@ -73,6 +73,10 @@ export function canInvite(payload: Pick<JwtPayload, 'roleId' | 'canInvite'>): bo
 }
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+export function isUuid(value: string): boolean {
+  return UUID_RE.test(value);
+}
 
 // The tenant a cross-tenant user is currently "acting as" — the tenant switcher
 // (components/AppShell.tsx) stores the selection in the dam_acting_tenant

@@ -1,15 +1,5 @@
 # CLAUDE.md — Project context
 
-## Session workflow
-
-**Start of every session:** read `docs/STATE.md` — the single source of truth
-for where the project is right now.
-
-**End of every session:**
-1. Rewrite `docs/STATE.md` in place (update; do not append).
-2. Prepend one short paragraph to `docs/sessions/CHANGELOG.md`.
-3. Do **not** create `session-NNN.md` files.
-
 ## What this is
 
 A multi-tenant DAM platform. Files live in object storage; only metadata
@@ -26,7 +16,7 @@ there is no separate backend process, and no Redis/BullMQ or worker in code.
 
 - `frontend/app/api/` — 47 API route handlers (the backend)
 - `frontend/app/` — 19 pages (App Router)
-- `frontend/lib/` — 20 shared modules (db, auth, session, permissions, storage, i18n, …)
+- `frontend/lib/` — 21 shared modules (db, auth, session, permissions, storage, i18n, rateLimit, …)
 - `frontend/components/` — 9 shared components
 - `db/migrations/` — schema, append-only, applied by `frontend/scripts/migrate.mjs`
 - `damInfra/` — Docker Compose for Postgres + MinIO
@@ -70,21 +60,12 @@ Guards in `lib/session.ts`: `requireAuth`, `requireAdmin` (role 1 or 2),
   `pdfjs-dist`, `@napi-rs/canvas`) must be in `serverExternalPackages` in
   `next.config.ts`, or the bundler rewrites the path and `spawn` fails.
 
-See `docs/STATE.md` for the long list of UI/SQL gotchas and current tech debt.
-
-## Known issues (as of 2026-08-18)
+## Known issues
 
 These are real and unfixed — do not treat the codebase as clean:
 
-- `GET /api/cover` accepts an arbitrary storage `key` and returns a presigned
-  URL for it, gated only by `requireAuth`. Any authenticated user can read any
-  object in the bucket. Needs to take a resource/collection id and run the
-  tenant access check.
-- The recursive tenant access-check CTE is duplicated across ~14 route files
-  even though `tenantHasResourceAccess` / `tenantHasCollectionAccess` exist in
-  `lib/permissions.ts`. Fix once, in lib — not fourteen times.
-- The JWT is stored in `localStorage` and read at ~100 call sites. Should be an
-  httpOnly cookie behind `middleware.ts`.
-- No rate limiting on login, forgot-password, invite redeem, or share tokens.
-- No index on `collections(parent_id)`, which every access check walks.
-- No tests and no CI.
+- Tenant-delete exclusivity still has its own recursive CTE in
+  `app/api/tenants/[id]/route.ts` (a different rule than access checks).
+- SMTP still needs real credentials in env (`SMTP_USER`/`SMTP_PASS`, or
+  `SMTP_HOST` + those). The transporter is no longer Gmail-only.
+- No Playwright/e2e suite. Unit tests live in `lib/session.test.ts`.

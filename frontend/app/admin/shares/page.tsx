@@ -3,6 +3,7 @@
 import { useEffect, useRef, useState } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
+import { getSessionClaims } from "@/lib/clientSession";
 import AppShell from "@/components/AppShell";
 import CollectionTreePicker from "@/components/CollectionTreePicker";
 import Select from "@/components/Select";
@@ -17,8 +18,7 @@ const EXPIRY_LABEL_KEYS: Record<ExpiryOption, string> = {
   "1d": "shares.expiry.1d",
   "7d": "shares.expiry.7d",
   "30d": "shares.expiry.30d",
-  never: "shares.expiry.never",
-};
+  never: "shares.expiry.never" };
 
 interface Target {
   type: "collection" | "resource";
@@ -51,14 +51,6 @@ interface CreatedShare {
   expiresAt: string | null;
 }
 
-function parseToken(token: string): Record<string, unknown> | null {
-  try {
-    return JSON.parse(atob(token.split(".")[1]));
-  } catch {
-    return null;
-  }
-}
-
 function formatDateTime(iso: string | null): string {
   if (!iso) return "—";
   return new Date(iso).toLocaleString(undefined, {
@@ -66,8 +58,7 @@ function formatDateTime(iso: string | null): string {
     month: "short",
     day: "numeric",
     hour: "numeric",
-    minute: "2-digit",
-  });
+    minute: "2-digit" });
 }
 
 function shareStatus(share: Share, t: TFunc): { label: string; className: string } {
@@ -107,7 +98,7 @@ export default function SharesPage() {
   const [notAdmin, setNotAdmin] = useState(false);
   // A tenant admin's Resource-target search reuses GET /api/media, which
   // stays requireSuperAdmin (the media library is a genuinely global,
-  // cross-tenant inventory — see the classification note in STATE.md).
+  // cross-tenant inventory).
   // Rather than show a "Resource" option that always 403s for them, this
   // page only offers Collection as a share target for a non-super-admin;
   // CollectionTreePicker's own GET /api/collections is already tenant-scoped.
@@ -144,8 +135,7 @@ export default function SharesPage() {
   const [copiedLinkIds, setCopiedLinkIds] = useState<Set<string>>(new Set());
 
   function authHeaders(): Record<string, string> {
-    const token = localStorage.getItem("token");
-    return token ? { Authorization: `Bearer ${token}` } : {};
+    return {};
   }
 
   function loadShares() {
@@ -164,12 +154,9 @@ export default function SharesPage() {
   }
 
   useEffect(() => {
-    const token = localStorage.getItem("token");
-    if (!token) {
-      router.replace("/");
-      return;
-    }
-    const payload = parseToken(token);
+    void (async () => {
+    const payload = await getSessionClaims();
+    if (!payload) { router.replace("/"); return; }
     // Shares are now tenant-scoped (POST/GET/PATCH/DELETE /api/shares, as of
     // this pass) — a tenant admin may manage shares within their own reach,
     // same as a super admin across every tenant. canAdmin covers both.
@@ -182,7 +169,7 @@ export default function SharesPage() {
     setAuthorized(true);
     loadShares();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [router]);
+  })();}, [router]);
 
   // Debounced resource search (300ms), reusing the admin-only media listing endpoint.
   useEffect(() => {
@@ -231,9 +218,7 @@ export default function SharesPage() {
           ...(targetType === "collection" ? { collectionId: targetId } : { resourceId: targetId }),
           accessLevel,
           expiresIn,
-          ...(label.trim() ? { label: label.trim() } : {}),
-        }),
-      });
+          ...(label.trim() ? { label: label.trim() } : {}) }) });
       const body = await res.json().catch(() => ({}));
       if (!res.ok) {
         setCreateError((body as { error?: string }).error ?? t("common.error.generic", { status: res.status }));
@@ -243,8 +228,7 @@ export default function SharesPage() {
         url: body.url,
         target: body.target,
         accessLevel: body.accessLevel,
-        expiresAt: body.expiresAt,
-      });
+        expiresAt: body.expiresAt });
       setCopied(false);
       resetCreateForm();
       loadShares();
@@ -276,8 +260,7 @@ export default function SharesPage() {
       const res = await fetch(`/api/shares/${share.id}`, {
         method: "PATCH",
         headers: { "Content-Type": "application/json", ...authHeaders() },
-        body: JSON.stringify({ revoked: true }),
-      });
+        body: JSON.stringify({ revoked: true }) });
       if (!res.ok) {
         const body = await res.json().catch(() => ({}));
         setRowErrors((prev) => ({ ...prev, [share.id]: (body as { error?: string }).error ?? t("common.error.generic", { status: res.status }) }));
@@ -464,8 +447,7 @@ export default function SharesPage() {
               onChange={(v) => setExpiresIn(v as ExpiryOption)}
               options={(Object.entries(EXPIRY_LABEL_KEYS) as [ExpiryOption, string][]).map(([value, labelKey]) => ({
                 value,
-                label: t(labelKey),
-              }))}
+                label: t(labelKey) }))}
               className="flex cursor-pointer items-center justify-between gap-2 rounded-[8px] border border-line bg-card py-1.5 px-3 text-sm text-ink outline-none transition-shadow focus:border-brand focus:ring-[3px] focus:ring-brand/15"
             />
           </div>

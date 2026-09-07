@@ -4,7 +4,7 @@ import { resolveUniqueFilename } from '@/lib/filenames';
 import { getObject } from '@/lib/storage';
 import { applyExtractedMetadata } from '@/lib/exif';
 import { logAccess } from '@/lib/accessLog';
-import { requirePermission } from '@/lib/permissions';
+import { requirePermission, tenantHasCollectionAccess } from '@/lib/permissions';
 import db from '@/lib/db';
 
 // Pulls the just-uploaded bytes back from MinIO and writes any mapped
@@ -102,25 +102,7 @@ export async function POST(request: Request) {
       // invisible in their tenant-scoped media view too.
       // Fail closed: no tenant (old token, or a data anomaly) means no query, zero access.
       if (!canAccessAllTenants(user)) {
-        if (!user.tenantId) {
-          return Response.json({ message: 'Access to collection denied' }, { status: 403 });
-        }
-        const accessCheck = await db.query(
-          `WITH RECURSIVE root_finder AS (
-             SELECT id, parent_id FROM collections WHERE id = $1
-             UNION ALL
-             SELECT c.id, c.parent_id
-             FROM collections c
-             INNER JOIN root_finder rf ON rf.parent_id = c.id
-             WHERE rf.parent_id IS NOT NULL
-           )
-           SELECT 1 FROM root_finder rf
-           INNER JOIN tenant_collection_access cca ON cca.collection_id = rf.id
-           WHERE cca.tenant_id = $2
-           LIMIT 1`,
-          [collectionId, user.tenantId],
-        );
-        if (accessCheck.rowCount === 0) {
+        if (!user.tenantId || !(await tenantHasCollectionAccess(user.tenantId, collectionId))) {
           return Response.json({ message: 'Access to collection denied' }, { status: 403 });
         }
       }
@@ -208,8 +190,7 @@ export async function POST(request: Request) {
         tenantId: user.tenantId ?? null,
         resourceId: resource.id,
         action: 'upload',
-        metadata: { filename: resource.original_filename, collectionId },
-      });
+        metadata: { filename: resource.original_filename, collectionId } });
       await extractMetadataInline(resource.id, resource.storage_key, resource.mime_type, user.tenantId ?? null);
       return Response.json(resource, { status: 201 });
     }
@@ -242,8 +223,7 @@ export async function POST(request: Request) {
       tenantId: user.tenantId ?? null,
       resourceId: resource.id,
       action: 'upload',
-      metadata: { filename: resource.original_filename, collectionId: null },
-    });
+      metadata: { filename: resource.original_filename, collectionId: null } });
     await extractMetadataInline(resource.id, resource.storage_key, resource.mime_type, user.tenantId ?? null);
     return Response.json(resource, { status: 201 });
   } catch (err) {

@@ -6,6 +6,7 @@ import { useRouter } from "next/navigation";
 import { Inter, Manrope } from "next/font/google";
 import Select from "@/components/Select";
 import { LOCALES, useTranslation, type Locale } from "@/lib/i18n";
+import { getSessionClaims, clearSessionCache } from "@/lib/clientSession";
 
 const inter = Inter({ subsets: ["latin"], weight: ["400", "500", "600"] });
 const manrope = Manrope({ subsets: ["latin"], weight: ["600", "700"] });
@@ -68,14 +69,6 @@ interface AppShellProps {
   title: React.ReactNode;
   actions?: React.ReactNode;
   children: React.ReactNode;
-}
-
-function parseToken(token: string): Record<string, unknown> | null {
-  try {
-    return JSON.parse(atob(token.split(".")[1]));
-  } catch {
-    return null;
-  }
 }
 
 // Accepts a name ("Georges Koueik") or an email ("georges.k@..."); splits on whitespace too
@@ -334,13 +327,11 @@ export default function AppShell({ active, title, actions, children }: AppShellP
             clipPath: [
               `circle(0px at ${x}px ${y}px)`,
               `circle(${endRadius}px at ${x}px ${y}px)`,
-            ],
-          },
+            ] },
           {
             duration: 450,
             easing: "ease-in-out",
-            pseudoElement: "::view-transition-new(root)",
-          },
+            pseudoElement: "::view-transition-new(root)" },
         );
       });
     } else {
@@ -349,65 +340,56 @@ export default function AppShell({ active, title, actions, children }: AppShellP
   }
 
   useEffect(() => {
-    const token = localStorage.getItem("token");
-    if (!token) {
-      router.replace("/");
-      return;
-    }
-    const payload = parseToken(token);
-    setIsAdmin(!!payload?.canAdmin);
-    setIsSuperAdmin(payload?.roleName === "super_admin");
-
-    // Tenant switcher setup — cross-tenant-access non-super-admin users only (a super
-    // admin's views are already unscoped; the switcher is for role-2 admins
-    // carrying the can_access_all_tenants flag). Default: their OWN tenant — switching
-    // to another tenant is always an explicit choice, never a surprise.
-    const isAllTenantsUser = payload?.canAccessAllTenants === true && payload?.roleName !== "super_admin";
-    setAllTenantsNonSuper(isAllTenantsUser);
-    if (isAllTenantsUser) {
-      const ownTenant = typeof payload?.tenantId === "string" ? payload.tenantId : null;
-      const fromCookie = readActingTenantCookie();
-      const acting = fromCookie ?? ownTenant;
-      if (acting) {
-        if (!fromCookie) writeActingTenantCookie(acting);
-        setActingTenant(acting);
+    let cancelled = false;
+    (async () => {
+      const payload = await getSessionClaims();
+      if (cancelled) return;
+      if (!payload) {
+        router.replace("/");
+        return;
       }
-      fetch("/api/tenants", { headers: { Authorization: `Bearer ${token}` } })
-        .then((res) => (res.ok ? res.json() : []))
-        .then((rows: { id: string; name: string }[]) => {
-          if (Array.isArray(rows)) setTenantOptions(rows);
-        })
-        .catch(() => {
-          // Non-fatal: the pill still shows the raw selection state; the
-          // select just has no options to switch to.
-        });
-    }
+      setIsAdmin(!!payload.canAdmin);
+      setIsSuperAdmin(payload.roleName === "super_admin");
 
-    setUserEmail(typeof payload?.email === "string" ? payload.email : null);
-    // Older tokens (issued before the "name" claim existed) simply won't have it —
-    // falls back to email everywhere below.
-    setUserName(typeof payload?.name === "string" && payload.name ? payload.name : null);
-    setUserRole(typeof payload?.roleName === "string" ? payload.roleName : null);
-    setAuthorized(true);
-
-    // Sidebar collapse preference — an explicit stored choice always wins over
-    // the role default (read/write localStorage only here, inside an effect,
-    // never during render). With nothing stored yet, default collapsed for
-    // viewers (no admin or upload permission) and expanded for everyone else;
-    // canAdmin/canUpload are read here only to pick this default — nav item
-    // gating below is untouched.
-    try {
-      const stored = localStorage.getItem(SIDEBAR_COLLAPSE_KEY);
-      if (stored === "true" || stored === "false") {
-        setCollapsed(stored === "true");
-      } else {
-        const canAdminFlag = !!payload?.canAdmin;
-        const canUploadFlag = !!payload?.canUpload;
-        setCollapsed(!canAdminFlag && !canUploadFlag);
+      const isAllTenantsUser = payload.canAccessAllTenants === true && payload.roleName !== "super_admin";
+      setAllTenantsNonSuper(isAllTenantsUser);
+      if (isAllTenantsUser) {
+        const ownTenant = typeof payload.tenantId === "string" ? payload.tenantId : null;
+        const fromCookie = readActingTenantCookie();
+        const acting = fromCookie ?? ownTenant;
+        if (acting) {
+          if (!fromCookie) writeActingTenantCookie(acting);
+          setActingTenant(acting);
+        }
+        fetch("/api/tenants")
+          .then((res) => (res.ok ? res.json() : []))
+          .then((rows: { id: string; name: string }[]) => {
+            if (Array.isArray(rows)) setTenantOptions(rows);
+          })
+          .catch(() => {});
       }
-    } catch {
-      setCollapsed(false);
-    }
+
+      setUserEmail(typeof payload.email === "string" ? payload.email : null);
+      setUserName(typeof payload.name === "string" && payload.name ? payload.name : null);
+      setUserRole(typeof payload.roleName === "string" ? payload.roleName : null);
+      setAuthorized(true);
+
+      try {
+        const stored = localStorage.getItem(SIDEBAR_COLLAPSE_KEY);
+        if (stored === "true" || stored === "false") {
+          setCollapsed(stored === "true");
+        } else {
+          const canAdminFlag = !!payload.canAdmin;
+          const canUploadFlag = !!payload.canUpload;
+          setCollapsed(!canAdminFlag && !canUploadFlag);
+        }
+      } catch {
+        setCollapsed(false);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
   }, [router]);
 
   function toggleCollapsed() {
@@ -431,10 +413,13 @@ export default function AppShell({ active, title, actions, children }: AppShellP
     return () => document.removeEventListener("keydown", handleKeyDown);
   }, [menuOpen]);
 
-  function handleSignOut() {
-    localStorage.removeItem("token");
-    // Never leave one user's acting-tenant selection behind for the next
-    // login in the same browser.
+  async function handleSignOut() {
+    clearSessionCache();
+    try {
+      await fetch("/api/auth/logout", { method: "POST", credentials: "same-origin" });
+    } catch {
+      // still leave the UI
+    }
     clearActingTenantCookie();
     router.push("/");
   }
@@ -550,8 +535,7 @@ export default function AppShell({ active, title, actions, children }: AppShellP
                 }`}
                 style={{
                   backgroundColor: isActive ? "rgba(255,255,255,0.12)" : "transparent",
-                  color: isActive ? "#FFFFFF" : "rgba(255,255,255,0.72)",
-                }}
+                  color: isActive ? "#FFFFFF" : "rgba(255,255,255,0.72)" }}
               >
                 {isActive && (
                   <span className="absolute left-0 top-1.5 bottom-1.5 w-[3px] rounded-full bg-brand-light" />
@@ -676,8 +660,7 @@ export default function AppShell({ active, title, actions, children }: AppShellP
         className="dam-aurora-shift pointer-events-none fixed inset-y-0 right-0 z-0 overflow-hidden"
         style={{
           left: collapsed ? SIDEBAR_WIDTH_COLLAPSED : SIDEBAR_WIDTH_EXPANDED,
-          backgroundColor: "var(--color-content-base)",
-        }}
+          backgroundColor: "var(--color-content-base)" }}
       >
         <div
           style={{
@@ -689,8 +672,7 @@ export default function AppShell({ active, title, actions, children }: AppShellP
             borderRadius: "9999px",
             backgroundColor: "var(--color-brand)",
             opacity: "var(--aurora-opacity-1)",
-            filter: "blur(70px)",
-          }}
+            filter: "blur(70px)" }}
         />
         <div
           style={{
@@ -702,8 +684,7 @@ export default function AppShell({ active, title, actions, children }: AppShellP
             borderRadius: "9999px",
             backgroundColor: "var(--color-brand-light)",
             opacity: "var(--aurora-opacity-2)",
-            filter: "blur(75px)",
-          }}
+            filter: "blur(75px)" }}
         />
         <div
           style={{
@@ -715,8 +696,7 @@ export default function AppShell({ active, title, actions, children }: AppShellP
             borderRadius: "9999px",
             backgroundColor: "var(--color-brand-mid)",
             opacity: "var(--aurora-opacity-3)",
-            filter: "blur(80px)",
-          }}
+            filter: "blur(80px)" }}
         />
       </div>
 

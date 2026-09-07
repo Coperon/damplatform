@@ -4,6 +4,7 @@ import { useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import Link from "next/link";
 import { useParams, useRouter } from "next/navigation";
+import { getSessionClaims } from "@/lib/clientSession";
 import JSZip from "jszip";
 import AppShell from "@/components/AppShell";
 import MetadataDrawer from "@/components/MetadataDrawer";
@@ -196,8 +197,7 @@ export default function CollectionPage() {
   // instantly regardless of this bundle's state.
   const [myPerms, setMyPerms] = useState<Record<string, boolean>>({
     download: true,
-    view_metadata: true,
-  });
+    view_metadata: true });
 
   const [children, setChildren] = useState<Collection[]>([]);
   const [loadError, setLoadError] = useState<string | null>(null);
@@ -356,20 +356,16 @@ export default function CollectionPage() {
 
   async function handleCreateShare() {
     if (!shareModalFileId) return;
-    const token = localStorage.getItem("token");
-    if (!token) return;
     setShareCreating(true);
     setShareError(null);
     try {
       const res = await fetch("/api/shares", {
         method: "POST",
-        headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+        headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           resourceId: shareModalFileId,
           accessLevel: shareAccessLevel,
-          expiresIn: shareExpiresIn,
-        }),
-      });
+          expiresIn: shareExpiresIn }) });
       const body = await res.json().catch(() => ({}));
       if (!res.ok) {
         setShareError((body as { error?: string }).error ?? t("common.error.generic", { status: res.status }));
@@ -384,34 +380,26 @@ export default function CollectionPage() {
   }
 
   useEffect(() => {
-    const token = localStorage.getItem("token");
-    if (!token) {
-      router.replace("/");
-      return;
-    }
     setAuthorized(true);
 
-    try {
-      const payload = JSON.parse(atob(token.split(".")[1]));
-      const upload = !!payload?.canUpload;
+    void (async () => {
+      const payload = await getSessionClaims();
+      if (!payload) {
+        router.replace("/");
+        return;
+      }
+      const upload = !!payload.canUpload;
       setCanUpload(upload);
-      setCanAdmin(!!payload?.canAdmin);
-      // Optimistic pre-fetch defaults (see the state declaration's own
-      // comment) — corrected moments later by the real fetch below.
+      setCanAdmin(!!payload.canAdmin);
       setMyPerms((prev) => ({
         ...prev,
         upload,
         edit_metadata: upload,
         remove_from_collection: upload,
       }));
-    } catch {
-      // malformed token — leave canUpload false
-    }
+    })();
 
-    // Stage 108 — the real, DB-backed permission bundle. Fetched once per
-    // mount, alongside every other per-collection fetch below; corrects the
-    // optimistic defaults above the moment it resolves.
-    fetch(`/api/permissions/mine`, { headers: { Authorization: `Bearer ${token}` } })
+    fetch(`/api/permissions/mine`)
       .then((res) => (res.ok ? res.json() : null))
       .then((data: { permissions: Record<string, boolean> } | null) => {
         if (data?.permissions) setMyPerms(data.permissions);
@@ -421,7 +409,7 @@ export default function CollectionPage() {
       });
 
     fetch(`/api/collections/${id}`, {
-      headers: { Authorization: `Bearer ${token}` },
+      
     })
       .then((res) => {
         if (!res.ok) throw new Error(`${res.status}`);
@@ -433,7 +421,7 @@ export default function CollectionPage() {
       });
 
     fetch(`/api/collections/${id}/ancestors`, {
-      headers: { Authorization: `Bearer ${token}` },
+      
     })
       .then((res) => {
         if (!res.ok) throw new Error(`${res.status}`);
@@ -450,8 +438,6 @@ export default function CollectionPage() {
   // optimistically prepending — a local prepend would silently exceed
   // subPageSize and leave subTotal stale now that this list is paginated.
   async function fetchSubcollections() {
-    const token = localStorage.getItem("token");
-    if (!token) return;
 
     const params = new URLSearchParams();
     params.set("parentId", id);
@@ -461,7 +447,7 @@ export default function CollectionPage() {
 
     try {
       const res = await fetch(`/api/collections?${params}`, {
-        headers: { Authorization: `Bearer ${token}` },
+        
       });
       if (!res.ok) throw new Error(`${res.status}`);
       const data = (await res.json()) as { collections: Collection[]; total: number; page: number; pageSize: number };
@@ -505,9 +491,7 @@ export default function CollectionPage() {
   // Fetches the current page of files. Shared by the pagination effect below
   // and by upload/import/bulk-action handlers that need an immediate refetch.
   async function fetchFiles() {
-    const token = localStorage.getItem("token");
-    if (!token) { router.replace("/"); return; }
-
+    
     setFilesLoading(true);
     setFilesError(null);
 
@@ -517,7 +501,7 @@ export default function CollectionPage() {
 
     try {
       const res = await fetch(`/api/collections/${id}/files?${params}`, {
-        headers: { Authorization: `Bearer ${token}` },
+        
       });
       if (!res.ok) throw new Error(`${res.status}`);
       const data = (await res.json()) as { files: FileItem[]; total: number; page: number; pageSize: number };
@@ -635,16 +619,14 @@ export default function CollectionPage() {
   // Fetch cover blob URLs for sub-collections whenever the children list changes.
   useEffect(() => {
     if (!authorized || children.length === 0) return;
-    const token = localStorage.getItem("token");
-    if (!token) return;
 
     for (const c of children) {
       if (!c.cover_storage_key) continue;
       (async () => {
         try {
           const res = await fetch(
-            `/api/cover?key=${encodeURIComponent(c.cover_storage_key!)}`,
-            { headers: { Authorization: `Bearer ${token}` } },
+            `/api/cover?collectionId=${encodeURIComponent(c.id)}`,
+            {  },
           );
           if (!res.ok) return;
           const { url } = await res.json();
@@ -665,12 +647,10 @@ export default function CollectionPage() {
   // already have a generated thumbnail_storage_key, whenever the file list changes.
   useEffect(() => {
     if (!authorized || files.length === 0) return;
-    const token = localStorage.getItem("token");
-    if (!token) return;
 
     for (const f of files) {
       // Any file with a generated thumbnail (video, PDF, or now image) fetches
-      // that small derivative via /api/cover?key= — never the full original.
+      // that small derivative via /api/cover?resourceId= — never the full original.
       // Images fall back to fetching the full original via /api/download/[id]
       // only when no thumbnail exists yet (pre-rollout files, or a just-
       // uploaded image whose fire-and-forget generation hasn't landed yet),
@@ -679,8 +659,8 @@ export default function CollectionPage() {
         (async () => {
           try {
             const res = await fetch(
-              `/api/cover?key=${encodeURIComponent(f.thumbnail_storage_key!)}`,
-              { headers: { Authorization: `Bearer ${token}` } },
+              `/api/cover?resourceId=${encodeURIComponent(f.id)}`,
+              {  },
             );
             if (!res.ok) return;
             const { url } = await res.json();
@@ -698,7 +678,7 @@ export default function CollectionPage() {
         (async () => {
           try {
             const res = await fetch(`/api/download/${f.id}`, {
-              headers: { Authorization: `Bearer ${token}` },
+              
             });
             if (!res.ok) return;
             const { downloadUrl } = await res.json();
@@ -735,9 +715,7 @@ export default function CollectionPage() {
 
   async function handleBulkDownload() {
     if (selectedIds.size === 0) return;
-    const token = localStorage.getItem("token");
-    if (!token) { router.replace("/"); return; }
-
+    
     setZipStatus("zipping");
     setZipProgress({ current: 0, total: selectedIds.size });
     setZipNote(null);
@@ -754,7 +732,7 @@ export default function CollectionPage() {
 
       try {
         const res = await fetch(`/api/download/${fileId}`, {
-          headers: { Authorization: `Bearer ${token}` },
+          
         });
         if (!res.ok) throw new Error(`${res.status}`);
         const { downloadUrl } = await res.json();
@@ -784,8 +762,7 @@ export default function CollectionPage() {
     const zipBlob = await zip.generateAsync({
       type: "blob",
       compression: "DEFLATE",
-      compressionOptions: { level: 6 },
-    });
+      compressionOptions: { level: 6 } });
 
     const objectUrl = URL.createObjectURL(zipBlob);
     const a = document.createElement("a");
@@ -813,10 +790,7 @@ export default function CollectionPage() {
     if (ids.length === 0) return;
     const confirmMsg = t("collections.bulk.removeConfirm", { count: ids.length });
     if (!confirm(confirmMsg)) return;
-
-    const token = localStorage.getItem("token");
-    if (!token) { router.replace("/"); return; }
-
+    
     setBulkActionStatus("removing");
     setBulkActionSummary(null);
     setBulkActionProgress({ current: 0, total: ids.length });
@@ -827,9 +801,7 @@ export default function CollectionPage() {
     for (let i = 0; i < ids.length; i++) {
       try {
         const res = await fetch(`/api/collections/${id}/files/${ids[i]}`, {
-          method: "DELETE",
-          headers: { Authorization: `Bearer ${token}` },
-        });
+          method: "DELETE" });
         if (!res.ok) throw new Error(`${res.status}`);
         succeeded++;
       } catch {
@@ -858,10 +830,7 @@ export default function CollectionPage() {
     if (ids.length === 0) return;
     const confirmMsg = t("collections.bulk.deleteConfirm", { count: ids.length });
     if (!confirm(confirmMsg)) return;
-
-    const token = localStorage.getItem("token");
-    if (!token) { router.replace("/"); return; }
-
+    
     setBulkActionStatus("deleting");
     setBulkActionSummary(null);
     setBulkActionProgress({ current: 0, total: ids.length });
@@ -872,9 +841,7 @@ export default function CollectionPage() {
     for (let i = 0; i < ids.length; i++) {
       try {
         const res = await fetch(`/api/resources/${ids[i]}`, {
-          method: "DELETE",
-          headers: { Authorization: `Bearer ${token}` },
-        });
+          method: "DELETE" });
         if (!res.ok) throw new Error(`${res.status}`);
         succeeded++;
       } catch {
@@ -897,9 +864,7 @@ export default function CollectionPage() {
 
   async function handleUpload() {
     if (selectedFiles.length === 0) return;
-    const token = localStorage.getItem("token");
-    if (!token) { router.replace("/"); return; }
-
+    
     setUploadStatus("uploading");
     setUploadSummary(null);
 
@@ -915,9 +880,8 @@ export default function CollectionPage() {
         // Step 1: presigned PUT URL
         const urlRes = await fetch("/api/upload/url", {
           method: "POST",
-          headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
-          body: JSON.stringify({ filename: file.name, contentType: file.type }),
-        });
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ filename: file.name, contentType: file.type }) });
         if (!urlRes.ok) throw new Error("url");
         const { uploadUrl, key } = await urlRes.json();
 
@@ -925,22 +889,19 @@ export default function CollectionPage() {
         const putRes = await fetch(uploadUrl, {
           method: "PUT",
           headers: { "Content-Type": file.type },
-          body: file,
-        });
+          body: file });
         if (!putRes.ok) throw new Error("minio");
 
         // Step 3: register in DB and link to this collection
         const completeRes = await fetch("/api/upload/complete", {
           method: "POST",
-          headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
+          headers: { "Content-Type": "application/json" },
           body: JSON.stringify({
             key,
             filename: file.name,
             contentType: file.type,
             size: file.size,
-            collectionId: id,
-          }),
-        });
+            collectionId: id }) });
         if (!completeRes.ok) throw new Error("complete");
         const resource = await completeRes.json();
         if (resource?.id) uploadedIds.push(resource.id);
@@ -950,9 +911,7 @@ export default function CollectionPage() {
         // the next list refresh.
         if (supportsGeneratedThumbnail(file.type) && resource?.id) {
           fetch(`/api/resources/${resource.id}/thumbnail`, {
-            method: "POST",
-            headers: { Authorization: `Bearer ${token}` },
-          }).catch(() => {});
+            method: "POST" }).catch(() => {});
         }
 
         succeeded++;
@@ -984,18 +943,15 @@ export default function CollectionPage() {
   async function handleImportFromUrl() {
     const url = importUrl.trim();
     if (!url) { setImportError(t("media.import.enterUrl")); return; }
-    const token = localStorage.getItem("token");
-    if (!token) { router.replace("/"); return; }
-
+    
     setImportStatus("importing");
     setImportError(null);
 
     try {
       const res = await fetch("/api/upload/from-url", {
         method: "POST",
-        headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
-        body: JSON.stringify({ url, collectionId: id }),
-      });
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ url, collectionId: id }) });
       const data = await res.json().catch(() => null);
       if (!res.ok) throw new Error(data?.message ?? t("media.import.genericError"));
 
@@ -1006,9 +962,7 @@ export default function CollectionPage() {
       // way in case that ever changes.
       if (data?.id && typeof data.mime_type === "string" && supportsGeneratedThumbnail(data.mime_type)) {
         fetch(`/api/resources/${data.id}/thumbnail`, {
-          method: "POST",
-          headers: { Authorization: `Bearer ${token}` },
-        }).catch(() => {});
+          method: "POST" }).catch(() => {});
       }
 
       setImportUrl("");
@@ -1021,21 +975,18 @@ export default function CollectionPage() {
   }
 
   async function handleDownload(fileId: string, filename: string) {
-    const token = localStorage.getItem("token");
-    if (!token) { router.replace("/"); return; }
-
+    
     setDownloadingIds((prev) => new Set(prev).add(fileId));
     setDownloadErrors((prev) => ({ ...prev, [fileId]: "" }));
 
     try {
       const res = await fetch(`/api/download/${fileId}`, {
-        headers: { Authorization: `Bearer ${token}` },
+        
       });
       if (res.status === 403) {
         setDownloadErrors((prev) => ({
           ...prev,
-          [fileId]: t("collections.download.error.forbidden"),
-        }));
+          [fileId]: t("collections.download.error.forbidden") }));
         return;
       }
       if (!res.ok) throw new Error(`${res.status}`);
@@ -1053,8 +1004,7 @@ export default function CollectionPage() {
     } catch {
       setDownloadErrors((prev) => ({
         ...prev,
-        [fileId]: t("collections.download.error.failed"),
-      }));
+        [fileId]: t("collections.download.error.failed") }));
     } finally {
       setDownloadingIds((prev) => {
         const next = new Set(prev);
@@ -1075,20 +1025,11 @@ export default function CollectionPage() {
   async function openLightbox(f: FileItem) {
     // Fire-and-forget "view" log — every lightbox open, any file type, not
     // just images; never awaited, never blocks opening the lightbox itself.
-    const viewToken = localStorage.getItem("token");
-    if (viewToken) {
-      fetch(`/api/resources/${f.id}/view`, {
-        method: "POST",
-        headers: { Authorization: `Bearer ${viewToken}` },
-      }).catch(() => {});
-    }
+    fetch(`/api/resources/${f.id}/view`, {
+      method: "POST" }).catch(() => {});
     if (f.mime_type.startsWith("image/")) {
-      const token = localStorage.getItem("token");
-      if (token) {
         try {
-          const res = await fetch(`/api/download/${f.id}`, {
-            headers: { Authorization: `Bearer ${token}` },
-          });
+          const res = await fetch(`/api/download/${f.id}`);
           if (res.ok) {
             const { downloadUrl } = await res.json();
             const imgRes = await fetch(downloadUrl);
@@ -1104,7 +1045,6 @@ export default function CollectionPage() {
         } catch {
           // fall through to the thumbnail fallback below
         }
-      }
     }
     setLightboxUrl(thumbnailUrls[f.id]);
     setLightboxAlt(f.original_filename);
@@ -1112,24 +1052,19 @@ export default function CollectionPage() {
 
   async function handleRemove(fileId: string) {
     if (!confirm(t("collections.remove.confirm"))) return;
-    const token = localStorage.getItem("token");
-    if (!token) { router.replace("/"); return; }
-
+    
     setRemovingIds((prev) => new Set(prev).add(fileId));
     setRemoveErrors((prev) => ({ ...prev, [fileId]: "" }));
 
     try {
       const res = await fetch(`/api/collections/${id}/files/${fileId}`, {
-        method: "DELETE",
-        headers: { Authorization: `Bearer ${token}` },
-      });
+        method: "DELETE" });
       if (!res.ok) throw new Error(`${res.status}`);
       setFiles((prev) => prev.filter((f) => f.id !== fileId));
     } catch {
       setRemoveErrors((prev) => ({
         ...prev,
-        [fileId]: t("collections.remove.error.failed"),
-      }));
+        [fileId]: t("collections.remove.error.failed") }));
     } finally {
       setRemovingIds((prev) => {
         const next = new Set(prev);
@@ -1141,24 +1076,19 @@ export default function CollectionPage() {
 
   async function handlePermanentDelete(fileId: string) {
     if (!confirm(t("media.bulk.deleteConfirm", { count: 1 }))) return;
-    const token = localStorage.getItem("token");
-    if (!token) { router.replace("/"); return; }
-
+    
     setDeletingIds((prev) => new Set(prev).add(fileId));
     setDeleteErrors((prev) => ({ ...prev, [fileId]: "" }));
 
     try {
       const res = await fetch(`/api/resources/${fileId}`, {
-        method: "DELETE",
-        headers: { Authorization: `Bearer ${token}` },
-      });
+        method: "DELETE" });
       if (!res.ok) throw new Error(`${res.status}`);
       setFiles((prev) => prev.filter((f) => f.id !== fileId));
     } catch {
       setDeleteErrors((prev) => ({
         ...prev,
-        [fileId]: t("media.error.deleteFailed"),
-      }));
+        [fileId]: t("media.error.deleteFailed") }));
     } finally {
       setDeletingIds((prev) => {
         const next = new Set(prev);
@@ -1169,15 +1099,13 @@ export default function CollectionPage() {
   }
 
   async function handleDeleteCollection() {
-    const token = localStorage.getItem("token");
-    if (!token) { router.replace("/"); return; }
-
+    
     setDeleteCollectionError(null);
     setDeletingCollection(true);
 
     try {
       const countRes = await fetch(`/api/collections/${id}/descendant-count`, {
-        headers: { Authorization: `Bearer ${token}` },
+        
       });
       if (!countRes.ok) throw new Error("count");
       const { count } = await countRes.json();
@@ -1189,9 +1117,7 @@ export default function CollectionPage() {
       if (!confirm(msg)) { setDeletingCollection(false); return; }
 
       const res = await fetch(`/api/collections/${id}`, {
-        method: "DELETE",
-        headers: { Authorization: `Bearer ${token}` },
-      });
+        method: "DELETE" });
       if (!res.ok) throw new Error(`${res.status}`);
       setCollectionDeleted(true);
     } catch {
@@ -1202,18 +1128,15 @@ export default function CollectionPage() {
   }
 
   async function handleSaveDescription(fileId: string) {
-    const token = localStorage.getItem("token");
-    if (!token) { router.replace("/"); return; }
-
+    
     setSavingDescIds((prev) => new Set(prev).add(fileId));
     setDescErrors((prev) => ({ ...prev, [fileId]: "" }));
 
     try {
       const res = await fetch(`/api/resources/${fileId}`, {
         method: "PATCH",
-        headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
-        body: JSON.stringify({ description: draftDesc }),
-      });
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ description: draftDesc }) });
       if (!res.ok) throw new Error(`${res.status}`);
       const { description } = await res.json();
       setFiles((prev) =>
@@ -1235,33 +1158,28 @@ export default function CollectionPage() {
     const file = e.target.files?.[0];
     if (coverFileInputRef.current) coverFileInputRef.current.value = "";
     if (!file) return;
-    const token = localStorage.getItem("token");
-    if (!token) { router.replace("/"); return; }
-
+    
     setCoverUploadStatus("uploading");
     setCoverUploadError(null);
 
     try {
       const urlRes = await fetch("/api/upload/url", {
         method: "POST",
-        headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
-        body: JSON.stringify({ filename: file.name, contentType: file.type }),
-      });
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ filename: file.name, contentType: file.type }) });
       if (!urlRes.ok) throw new Error("url");
       const { uploadUrl, key } = await urlRes.json();
 
       const putRes = await fetch(uploadUrl, {
         method: "PUT",
         headers: { "Content-Type": file.type },
-        body: file,
-      });
+        body: file });
       if (!putRes.ok) throw new Error("minio");
 
       const patchRes = await fetch(`/api/collections/${id}`, {
         method: "PATCH",
-        headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
-        body: JSON.stringify({ coverStorageKey: key }),
-      });
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ coverStorageKey: key }) });
       if (!patchRes.ok) throw new Error("patch");
 
       setCoverUploadStatus("done");
@@ -1286,13 +1204,10 @@ export default function CollectionPage() {
     setAccessError(null);
     setAccessSelected(new Set());
     setAccessLoading(true);
-
-    const token = localStorage.getItem("token");
-    if (!token) { router.replace("/"); return; }
-
+    
     try {
       const res = await fetch(`/api/collections/${targetId}/access`, {
-        headers: { Authorization: `Bearer ${token}` },
+        
       });
       if (!res.ok) throw new Error(`${res.status}`);
       const data: AccessResponse = await res.json();
@@ -1330,18 +1245,14 @@ export default function CollectionPage() {
         ? t("collections.access.confirmRemoveAll")
         : t("collections.access.confirmSave");
     if (!confirm(confirmMsg)) return;
-
-    const token = localStorage.getItem("token");
-    if (!token) { router.replace("/"); return; }
-
+    
     setAccessSaving(true);
     setAccessError(null);
     try {
       const res = await fetch(`/api/collections/${accessTargetId}/access`, {
         method: "PUT",
-        headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
-        body: JSON.stringify({ tenantIds }),
-      });
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ tenantIds }) });
       if (!res.ok) throw new Error(`${res.status}`);
       closeAccessModal();
     } catch {
@@ -1353,16 +1264,13 @@ export default function CollectionPage() {
   async function handleRenameThisCollection() {
     const newName = prompt(t("collections.rename.prompt"), collectionName ?? "")?.trim();
     if (!newName) return;
-    const token = localStorage.getItem("token");
-    if (!token) { router.replace("/"); return; }
-
+    
     setRenamingThisCollection(true);
     try {
       const res = await fetch(`/api/collections/${id}`, {
         method: "PATCH",
-        headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
-        body: JSON.stringify({ name: newName }),
-      });
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ name: newName }) });
       if (!res.ok) throw new Error(`${res.status}`);
       setCollectionName(newName);
     } catch {
@@ -1375,16 +1283,13 @@ export default function CollectionPage() {
   async function handleRenameChild(childId: string, currentName: string) {
     const newName = prompt(t("collections.rename.prompt"), currentName)?.trim();
     if (!newName) return;
-    const token = localStorage.getItem("token");
-    if (!token) { router.replace("/"); return; }
-
+    
     setRenamingChildId(childId);
     try {
       const res = await fetch(`/api/collections/${childId}`, {
         method: "PATCH",
-        headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
-        body: JSON.stringify({ name: newName }),
-      });
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ name: newName }) });
       if (!res.ok) throw new Error(`${res.status}`);
       setChildren((prev) => prev.map((c) => c.id === childId ? { ...c, name: newName } : c));
     } catch {
@@ -1397,16 +1302,13 @@ export default function CollectionPage() {
   async function handleCreateSubcollection() {
     const name = prompt(t("collections.create.subcollectionPrompt"))?.trim();
     if (!name) return;
-    const token = localStorage.getItem("token");
-    if (!token) { router.replace("/"); return; }
-
+    
     setCreatingSubcollection(true);
     try {
       const res = await fetch("/api/collections", {
         method: "POST",
-        headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
-        body: JSON.stringify({ name, parentId: id }),
-      });
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ name, parentId: id }) });
       if (!res.ok) throw new Error(`${res.status}`);
       await res.json();
       await fetchSubcollections();
@@ -1418,15 +1320,13 @@ export default function CollectionPage() {
   }
 
   async function handleDeleteChild(childId: string) {
-    const token = localStorage.getItem("token");
-    if (!token) { router.replace("/"); return; }
-
+    
     setDeleteChildErrors((prev) => ({ ...prev, [childId]: "" }));
     setDeletingChildId(childId);
 
     try {
       const countRes = await fetch(`/api/collections/${childId}/descendant-count`, {
-        headers: { Authorization: `Bearer ${token}` },
+        
       });
       if (!countRes.ok) throw new Error("count");
       const { count } = await countRes.json();
@@ -1438,9 +1338,7 @@ export default function CollectionPage() {
       if (!confirm(msg)) { setDeletingChildId(null); return; }
 
       const res = await fetch(`/api/collections/${childId}`, {
-        method: "DELETE",
-        headers: { Authorization: `Bearer ${token}` },
-      });
+        method: "DELETE" });
       if (!res.ok) throw new Error(`${res.status}`);
       setChildren((prev) => prev.filter((c) => c.id !== childId));
     } catch {
@@ -1453,18 +1351,15 @@ export default function CollectionPage() {
   async function handleRenameFile(fileId: string, currentFilename: string) {
     const newName = prompt(t("media.rename.prompt"), currentFilename)?.trim();
     if (!newName) return;
-    const token = localStorage.getItem("token");
-    if (!token) { router.replace("/"); return; }
-
+    
     setRenamingFileIds((prev) => new Set(prev).add(fileId));
     setRenameFileErrors((prev) => ({ ...prev, [fileId]: "" }));
 
     try {
       const res = await fetch(`/api/resources/${fileId}`, {
         method: "PATCH",
-        headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
-        body: JSON.stringify({ originalFilename: newName }),
-      });
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ originalFilename: newName }) });
       if (!res.ok) throw new Error(`${res.status}`);
       const { original_filename } = await res.json();
       setFiles((prev) =>
@@ -1482,17 +1377,13 @@ export default function CollectionPage() {
   }
 
   async function handleGenerateThumbnail(fileId: string) {
-    const token = localStorage.getItem("token");
-    if (!token) { router.replace("/"); return; }
-
+    
     setGeneratingThumbIds((prev) => new Set(prev).add(fileId));
     setThumbnailErrors((prev) => ({ ...prev, [fileId]: "" }));
 
     try {
       const res = await fetch(`/api/resources/${fileId}/thumbnail`, {
-        method: "POST",
-        headers: { Authorization: `Bearer ${token}` },
-      });
+        method: "POST" });
       if (!res.ok) throw new Error(`${res.status}`);
       const { thumbnailStorageKey } = await res.json();
       setFiles((prev) =>
@@ -1510,17 +1401,13 @@ export default function CollectionPage() {
   }
 
   async function handleRegenerateThumbnail(fileId: string) {
-    const token = localStorage.getItem("token");
-    if (!token) { router.replace("/"); return; }
-
+    
     setGeneratingThumbIds((prev) => new Set(prev).add(fileId));
     setThumbnailErrors((prev) => ({ ...prev, [fileId]: "" }));
 
     try {
       const res = await fetch(`/api/resources/${fileId}/thumbnail?force=true`, {
-        method: "POST",
-        headers: { Authorization: `Bearer ${token}` },
-      });
+        method: "POST" });
       if (!res.ok) throw new Error(`${res.status}`);
       const { thumbnailStorageKey } = await res.json();
       setFiles((prev) =>
@@ -1532,8 +1419,8 @@ export default function CollectionPage() {
       // guarantee a fresh fetch — pull a new presigned URL + blob directly
       // so the card shows the just-regenerated image, not a stale cached one.
       const coverRes = await fetch(
-        `/api/cover?key=${encodeURIComponent(thumbnailStorageKey)}`,
-        { headers: { Authorization: `Bearer ${token}` } },
+        `/api/cover?resourceId=${encodeURIComponent(fileId)}`,
+        {  },
       );
       if (coverRes.ok) {
         const { url } = await coverRes.json();
@@ -2092,8 +1979,7 @@ export default function CollectionPage() {
               {t("media.upload.progress", {
                 current: uploadProgress.current,
                 total: uploadProgress.total,
-                filename: uploadProgress.filename,
-              })}
+                filename: uploadProgress.filename })}
             </p>
           )}
           {uploadStatus === "done" && uploadSummary && (

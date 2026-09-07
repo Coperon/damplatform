@@ -60,7 +60,19 @@ export function mintSessionToken(user: {
 
   return {
     access_token: token,
-    user: { id: user.id, email: user.email, name: user.name ?? null },
+    user: {
+      id: user.id,
+      email: user.email,
+      name: user.name ?? null,
+      canDownload,
+      canUpload,
+      canAdmin,
+      tenantId: user.tenant_id ?? null,
+      roleId: user.role_id ?? null,
+      roleName: user.role_name ?? null,
+      canAccessAllTenants: payload.canAccessAllTenants,
+      canInvite: payload.canInvite,
+    },
   };
 }
 

@@ -109,8 +109,7 @@ export async function GET(req: NextRequest) {
         range: DEFAULT_RANGE,
         events: [],
         hasMore: false,
-        nextCursor: null,
-      });
+        nextCursor: null });
     }
     tenantScope = effectiveTenant;
   }
@@ -264,12 +263,10 @@ export async function GET(req: NextRequest) {
         target = {
           type: targetType,
           id: targetId,
-          name: targetType === 'resource' ? row.resource_filename : row.share_target_collection_name,
-        };
+          name: targetType === 'resource' ? row.resource_filename : row.share_target_collection_name };
         detail = {
           accessLevel: typeof metadata.accessLevel === 'string' ? metadata.accessLevel : null,
-          expiresAt: typeof metadata.expiresAt === 'string' ? metadata.expiresAt : null,
-        };
+          expiresAt: typeof metadata.expiresAt === 'string' ? metadata.expiresAt : null };
         break;
       }
       case 'share_access': {
@@ -292,8 +289,7 @@ export async function GET(req: NextRequest) {
         }
         detail = {
           accessLevel: typeof metadata.accessLevel === 'string' ? metadata.accessLevel : null,
-          shareAction: metadata.action === 'downloaded' ? 'downloaded' : 'viewed',
-        };
+          shareAction: metadata.action === 'downloaded' ? 'downloaded' : 'viewed' };
         break;
       }
       case 'all_tenants_flag_change':
@@ -304,16 +300,14 @@ export async function GET(req: NextRequest) {
         detail = {
           targetUserId: typeof metadata.targetUserId === 'string' ? metadata.targetUserId : null,
           targetEmail: typeof metadata.targetEmail === 'string' ? metadata.targetEmail : null,
-          newValue: metadata.newValue === true,
-        };
+          newValue: metadata.newValue === true };
         break;
       case 'invite_flag_change':
         // Same shape as all_tenants_flag_change above, for users.can_invite.
         detail = {
           targetUserId: typeof metadata.targetUserId === 'string' ? metadata.targetUserId : null,
           targetEmail: typeof metadata.targetEmail === 'string' ? metadata.targetEmail : null,
-          newValue: metadata.newValue === true,
-        };
+          newValue: metadata.newValue === true };
         break;
       case 'user_delete':
         // Same "describe the target from write-time metadata" shape as the
@@ -324,8 +318,7 @@ export async function GET(req: NextRequest) {
           targetUserId: typeof metadata.targetUserId === 'string' ? metadata.targetUserId : null,
           targetEmail: typeof metadata.targetEmail === 'string' ? metadata.targetEmail : null,
           targetName: typeof metadata.targetName === 'string' ? metadata.targetName : null,
-          targetRoleId: typeof metadata.targetRoleId === 'number' ? metadata.targetRoleId : null,
-        };
+          targetRoleId: typeof metadata.targetRoleId === 'number' ? metadata.targetRoleId : null };
         break;
       case 'tenant_delete':
         // Same shape again — the tenant row (and every row that would
@@ -339,8 +332,7 @@ export async function GET(req: NextRequest) {
           collectionsDeleted: typeof metadata.collectionsDeleted === 'number' ? metadata.collectionsDeleted : null,
           collectionsSkippedShared:
             typeof metadata.collectionsSkippedShared === 'number' ? metadata.collectionsSkippedShared : null,
-          resourcesDeleted: typeof metadata.resourcesDeleted === 'number' ? metadata.resourcesDeleted : null,
-        };
+          resourcesDeleted: typeof metadata.resourcesDeleted === 'number' ? metadata.resourcesDeleted : null };
         break;
     }
 
@@ -353,8 +345,7 @@ export async function GET(req: NextRequest) {
       actor,
       resource,
       target,
-      detail,
-    };
+      detail };
   });
 
   const last = pageRows[pageRows.length - 1];
@@ -364,11 +355,9 @@ export async function GET(req: NextRequest) {
     scope: {
       type: tenantScope !== null ? 'tenant' : 'all',
       tenantId: tenantScope,
-      tenantName: scopeTenantName,
-    },
+      tenantName: scopeTenantName },
     range,
     events,
     hasMore,
-    nextCursor,
-  });
+    nextCursor });
 }

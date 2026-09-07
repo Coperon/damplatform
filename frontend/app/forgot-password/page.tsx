@@ -8,8 +8,7 @@ import AuthShell, {
   authButtonClass,
   authMessageClass,
   authLinkClass,
-  authBackLinkClass,
-} from "@/components/AuthShell";
+  authBackLinkClass } from "@/components/AuthShell";
 
 export default function ForgotPasswordPage() {
   const [email, setEmail] = useState("");
@@ -26,8 +25,7 @@ export default function ForgotPasswordPage() {
       const res = await fetch("/api/auth/forgot-password", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ email }),
-      });
+        body: JSON.stringify({ email }) });
 
       const data = await res.json().catch(() => null);
       // The backend always returns the same neutral message on purpose.

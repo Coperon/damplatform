@@ -30,8 +30,7 @@ export default function MetadataDrawer({
   filename,
   meta,
   canEdit,
-  onClose,
-}: MetadataDrawerProps) {
+  onClose }: MetadataDrawerProps) {
   const { t } = useTranslation();
   const closeButtonRef = useRef<HTMLButtonElement>(null);
 

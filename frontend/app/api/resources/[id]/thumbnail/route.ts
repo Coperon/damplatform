@@ -99,8 +99,7 @@ function runFfmpeg(args: string[]): Promise<void> {
 
     const child = spawn(resolvedFfmpegPath, args, {
       windowsHide: true,
-      stdio: ['ignore', 'ignore', 'pipe'],
-    });
+      stdio: ['ignore', 'ignore', 'pipe'] });
 
     let stderr = '';
     child.stderr.on('data', (chunk: Buffer) => {
@@ -178,8 +177,7 @@ async function renderPdfFirstPage(pdfBuffer: Buffer): Promise<Buffer> {
   const loadingTask = getDocument({
     data: new Uint8Array(pdfBuffer),
     standardFontDataUrl: standardFontDataUrl(),
-    verbosity: 0,
-  });
+    verbosity: 0 });
 
   try {
     const pdf = await loadingTask.promise;
@@ -212,7 +210,7 @@ async function renderPdfFirstPage(pdfBuffer: Buffer): Promise<Buffer> {
  * Renders a downscaled JPEG from an arbitrary supported image buffer, never
  * upscaling — if the source's long edge is already at or below
  * IMAGE_THUMBNAIL_LONG_EDGE, it's re-encoded at its native size (normalizing
- * the fetch path to always be `/api/cover?key=` matters more than saving a
+ * the fetch path to always be `/api/cover?resourceId=` matters more than saving a
  * few KB on an already-small file).
  *
  * Deliberately does **not** read or apply the image's EXIF orientation tag

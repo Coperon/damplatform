@@ -3,6 +3,7 @@
 import { Suspense, useEffect, useRef, useState } from "react";
 import Link from "next/link";
 import { useParams, useRouter, useSearchParams } from "next/navigation";
+import { getSessionClaims } from "@/lib/clientSession";
 import AppShell from "@/components/AppShell";
 import ResourceMetadata, { ResourceMetadataHandle } from "@/components/ResourceMetadata";
 import FileTypeIcon from "@/components/FileTypeIcon";
@@ -17,17 +18,8 @@ interface ResourceDetail {
   thumbnail_storage_key: string | null;
 }
 
-function parseToken(token: string): Record<string, unknown> | null {
-  try {
-    return JSON.parse(atob(token.split(".")[1]));
-  } catch {
-    return null;
-  }
-}
-
 function authHeaders(): Record<string, string> {
-  const token = localStorage.getItem("token");
-  return token ? { Authorization: `Bearer ${token}` } : {};
+  return {};
 }
 
 function formatBytes(bytes: number): string {
@@ -135,19 +127,16 @@ function EditResourceMetadataPageInner() {
   // fetch below enforces server-side (an editor whose group can't reach this
   // asset still gets the same "Not authorized" state via the 403 branch).
   useEffect(() => {
-    const token = localStorage.getItem("token");
-    if (!token) {
-      router.replace("/");
-      return;
-    }
-    const payload = parseToken(token);
+    void (async () => {
+    const payload = await getSessionClaims();
+    if (!payload) { router.replace("/"); return; }
     if (!(payload?.canAdmin || payload?.canUpload)) {
       setNotAuthorized(true);
       setAuthorized(true);
       return;
     }
     setAuthorized(true);
-  }, [router]);
+  })();}, [router]);
 
   useEffect(() => {
     if (!authorized || notAuthorized) return;
@@ -179,20 +168,18 @@ function EditResourceMetadataPageInner() {
 
   useEffect(() => {
     if (!resource) return;
-    const token = localStorage.getItem("token");
-    if (!token) return;
 
     (async () => {
       try {
         // Any file with a generated thumbnail (video, PDF, or now image)
-        // previews that small derivative via /api/cover?key= — never the
+        // previews that small derivative via /api/cover?resourceId= — never the
         // full original. An image with no thumbnail yet falls back to the
         // full original via /api/download/[id] so the preview isn't blank
         // while generation is in flight.
         if (resource.thumbnail_storage_key) {
           const res = await fetch(
-            `/api/cover?key=${encodeURIComponent(resource.thumbnail_storage_key)}`,
-            { headers: { Authorization: `Bearer ${token}` } },
+            `/api/cover?resourceId=${encodeURIComponent(resource.id)}`,
+            {  },
           );
           if (!res.ok) return;
           const { url } = await res.json();
@@ -204,7 +191,7 @@ function EditResourceMetadataPageInner() {
           setPreviewUrl(objectUrl);
         } else if (resource.mime_type.startsWith("image/")) {
           const res = await fetch(`/api/download/${resource.id}`, {
-            headers: { Authorization: `Bearer ${token}` },
+            
           });
           if (!res.ok) return;
           const { downloadUrl } = await res.json();

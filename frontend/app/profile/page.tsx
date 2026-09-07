@@ -64,8 +64,7 @@ function formatDateTime(iso: string): string {
     month: "short",
     day: "numeric",
     hour: "numeric",
-    minute: "2-digit",
-  });
+    minute: "2-digit" });
 }
 
 const inputClass =
@@ -117,14 +116,9 @@ export default function ProfilePage() {
   const [tenantSaved, setTenantSaved] = useState(false);
 
   function loadProfile() {
-    const token = localStorage.getItem("token");
-    if (!token) {
-      router.replace("/");
-      return;
-    }
     setLoading(true);
     setLoadError(null);
-    fetch("/api/profile", { headers: { Authorization: `Bearer ${token}` } })
+    fetch("/api/profile", {  })
       .then((res) => {
         if (!res.ok) throw new Error(t("common.error.generic", { status: res.status }));
         return res.json() as Promise<Profile>;
@@ -145,11 +139,6 @@ export default function ProfilePage() {
   }
 
   useEffect(() => {
-    const token = localStorage.getItem("token");
-    if (!token) {
-      router.replace("/");
-      return;
-    }
     setAuthorized(true);
     loadProfile();
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -157,8 +146,7 @@ export default function ProfilePage() {
 
   async function handleSaveName(e: React.FormEvent) {
     e.preventDefault();
-    const token = localStorage.getItem("token");
-    if (!token || !profile) return;
+    if (!profile) return;
 
     const trimmed = nameInput.trim();
     if (!trimmed) {
@@ -172,9 +160,8 @@ export default function ProfilePage() {
     try {
       const res = await fetch("/api/profile", {
         method: "PATCH",
-        headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
-        body: JSON.stringify({ name: trimmed }),
-      });
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ name: trimmed }) });
       const body = await res.json().catch(() => ({}));
       if (!res.ok) {
         setNameError((body as { error?: string }).error ?? t("common.error.generic", { status: res.status }));
@@ -194,8 +181,6 @@ export default function ProfilePage() {
 
   async function handleChangePassword(e: React.FormEvent) {
     e.preventDefault();
-    const token = localStorage.getItem("token");
-    if (!token) return;
 
     setPasswordError(null);
     setPasswordSuccess(null);
@@ -217,9 +202,8 @@ export default function ProfilePage() {
     try {
       const res = await fetch("/api/auth/change-password", {
         method: "POST",
-        headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
-        body: JSON.stringify({ currentPassword, newPassword }),
-      });
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ currentPassword, newPassword }) });
       const body = await res.json().catch(() => ({}));
       if (!res.ok) {
         setPasswordError((body as { message?: string }).message ?? t("common.error.generic", { status: res.status }));
@@ -241,8 +225,6 @@ export default function ProfilePage() {
 
   async function handleRequestEmailChange(e: React.FormEvent) {
     e.preventDefault();
-    const token = localStorage.getItem("token");
-    if (!token) return;
 
     setEmailError(null);
     setEmailSuccess(null);
@@ -257,9 +239,8 @@ export default function ProfilePage() {
     try {
       const res = await fetch("/api/profile/email-change", {
         method: "POST",
-        headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
-        body: JSON.stringify({ newEmail: trimmed }),
-      });
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ newEmail: trimmed }) });
       const body = await res.json().catch(() => ({}));
       if (!res.ok) {
         setEmailError((body as { error?: string }).error ?? t("common.error.generic", { status: res.status }));
@@ -279,16 +260,12 @@ export default function ProfilePage() {
   }
 
   async function handleCancelEmailChange() {
-    const token = localStorage.getItem("token");
-    if (!token) return;
     setCancelling(true);
     setEmailError(null);
     setEmailSuccess(null);
     try {
       const res = await fetch("/api/profile/email-change", {
-        method: "DELETE",
-        headers: { Authorization: `Bearer ${token}` },
-      });
+        method: "DELETE" });
       if (!res.ok) {
         const body = await res.json().catch(() => ({}));
         setEmailError((body as { error?: string }).error ?? t("common.error.generic", { status: res.status }));
@@ -304,8 +281,7 @@ export default function ProfilePage() {
 
   async function handleSaveTenant(e: React.FormEvent) {
     e.preventDefault();
-    const token = localStorage.getItem("token");
-    if (!token || !profile?.tenant) return;
+    if (!profile?.tenant) return;
 
     const name = tenantName.trim();
     const address = tenantAddress.trim();
@@ -321,9 +297,8 @@ export default function ProfilePage() {
     try {
       const res = await fetch("/api/profile/tenant", {
         method: "PATCH",
-        headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
-        body: JSON.stringify({ name, address, phone }),
-      });
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ name, address, phone }) });
       const body = await res.json().catch(() => ({}));
       if (!res.ok) {
         setTenantError((body as { error?: string }).error ?? t("common.error.generic", { status: res.status }));
@@ -460,8 +435,7 @@ export default function ProfilePage() {
               <p className="text-sm font-semibold text-ink">{t("common.email")}</p>
               <p className="mt-1 text-xs text-slate">
                 {interpolateJSX(t("profile.email.hint"), {
-                  email: <span className="font-medium text-ink">{profile.email}</span>,
-                })}
+                  email: <span className="font-medium text-ink">{profile.email}</span> })}
               </p>
             </div>
 
@@ -469,8 +443,7 @@ export default function ProfilePage() {
               <div className="flex flex-col gap-3 rounded-[10px] border border-amber-200 dark:border-amber-800/60 bg-amber-50 dark:bg-amber-950/40 p-4">
                 <p className="text-sm text-amber-900 dark:text-amber-200">
                   {interpolateJSX(t("profile.email.pendingNotice", { date: formatDateTime(profile.pendingEmailChange.expiresAt) }), {
-                    email: <span className="font-semibold">{profile.pendingEmailChange.newEmail}</span>,
-                  })}
+                    email: <span className="font-semibold">{profile.pendingEmailChange.newEmail}</span> })}
                 </p>
                 <div>
                   <button

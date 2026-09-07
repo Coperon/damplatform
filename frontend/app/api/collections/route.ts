@@ -1,7 +1,7 @@
 import { requireAuth, isSuperAdmin, canAccessAllTenants, actingTenantId } from '@/lib/session';
 import db from '@/lib/db';
 import { AppError } from '@/lib/errors';
-import { tenantHasCollectionAccess, requirePermission } from '@/lib/permissions';
+import { tenantHasCollectionAccess, requirePermission, sqlAccessibleCollectionsCte, sqlTopLevelGrantedCollectionsCte } from '@/lib/permissions';
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
@@ -142,8 +142,7 @@ export async function POST(request: Request) {
 const COLLECTION_SORT_MAP: Record<string, string> = {
   default: 'c.created_at DESC',
   name_asc: 'LOWER(c.name) ASC',
-  name_desc: 'LOWER(c.name) DESC',
-};
+  name_desc: 'LOWER(c.name) DESC' };
 
 // Whitelisted page sizes — pageSize is validated against this list, never
 // taken from the request as-is. Same convention as /api/media (Stage 61) and
@@ -254,31 +253,7 @@ export async function GET(request: Request) {
       // depth 0 = the collection itself, incrementing per step up. A collection
       // qualifies when it's directly granted (cca_self) and no ancestor at
       // depth >= 1 is also granted (ag IS NULL) — the "topmost grant" frontier.
-      withRecursive = `WITH RECURSIVE root_finder AS (
-           SELECT
-             id          AS original_id,
-             id          AS current_id,
-             parent_id   AS current_parent,
-             0           AS depth
-           FROM collections
-
-           UNION ALL
-
-           SELECT
-             rf.original_id,
-             c.id          AS current_id,
-             c.parent_id   AS current_parent,
-             rf.depth + 1  AS depth
-           FROM root_finder rf
-           INNER JOIN collections c ON c.id = rf.current_parent
-           WHERE rf.current_parent IS NOT NULL
-         ),
-         ancestor_granted AS (
-           SELECT DISTINCT rf.original_id AS collection_id
-           FROM root_finder rf
-           INNER JOIN tenant_collection_access cca ON cca.collection_id = rf.current_id
-           WHERE cca.tenant_id = $1 AND rf.depth >= 1
-         )`;
+      withRecursive = sqlTopLevelGrantedCollectionsCte(1);
       cascadeFromWhere = `FROM collections c
          INNER JOIN tenant_collection_access cca_self
            ON cca_self.collection_id = c.id AND cca_self.tenant_id = $1
@@ -286,29 +261,7 @@ export async function GET(request: Request) {
          WHERE ag.collection_id IS NULL`;
       params = [effectiveTenant];
     } else {
-      withRecursive = `WITH RECURSIVE root_finder AS (
-           SELECT
-             id          AS original_id,
-             id          AS current_id,
-             parent_id   AS current_parent
-           FROM collections
-
-           UNION ALL
-
-           SELECT
-             rf.original_id,
-             c.id          AS current_id,
-             c.parent_id   AS current_parent
-           FROM root_finder rf
-           INNER JOIN collections c ON c.id = rf.current_parent
-           WHERE rf.current_parent IS NOT NULL
-         ),
-         accessible AS (
-           SELECT DISTINCT rf.original_id AS collection_id
-           FROM root_finder rf
-           INNER JOIN tenant_collection_access cca ON cca.collection_id = rf.current_id
-           WHERE cca.tenant_id = $1
-         )`;
+      withRecursive = sqlAccessibleCollectionsCte(1);
       cascadeFromWhere = `FROM collections c
          INNER JOIN accessible ac ON ac.collection_id = c.id
          WHERE c.parent_id = $2`;

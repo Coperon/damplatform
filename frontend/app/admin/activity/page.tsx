@@ -4,6 +4,7 @@ import { Fragment, useCallback, useEffect, useRef, useState } from "react";
 import Link from "next/link";
 import { createPortal } from "react-dom";
 import { useRouter } from "next/navigation";
+import { getSessionClaims } from "@/lib/clientSession";
 import AppShell from "@/components/AppShell";
 import Select from "@/components/Select";
 import { useTranslation } from "@/lib/i18n";
@@ -44,8 +45,7 @@ const RANGE_LABEL_KEYS: Record<Range, string> = {
   "7d": "analytics.range.7d",
   "30d": "analytics.range.30d",
   "90d": "analytics.range.90d",
-  all: "analytics.range.all",
-};
+  all: "analytics.range.all" };
 
 const ACTION_LABEL_KEYS: Record<AccessAction, string> = {
   login: "activity.action.login",
@@ -57,8 +57,7 @@ const ACTION_LABEL_KEYS: Record<AccessAction, string> = {
   all_tenants_flag_change: "activity.action.allTenantsFlagChange",
   invite_flag_change: "activity.action.inviteFlagChange",
   user_delete: "activity.action.userDelete",
-  tenant_delete: "activity.action.tenantDelete",
-};
+  tenant_delete: "activity.action.tenantDelete" };
 const ALL_ACTIONS: AccessAction[] = [
   "login",
   "upload",
@@ -114,17 +113,8 @@ interface UserOption {
   label: string;
 }
 
-function parseToken(token: string): Record<string, unknown> | null {
-  try {
-    return JSON.parse(atob(token.split(".")[1]));
-  } catch {
-    return null;
-  }
-}
-
 function authHeaders(): Record<string, string> {
-  const token = localStorage.getItem("token");
-  return token ? { Authorization: `Bearer ${token}` } : {};
+  return {};
 }
 
 function ChevronIcon() {
@@ -456,12 +446,11 @@ function EventRow({ event, showTenant }: { event: ActivityEvent; showTenant: boo
 // Portal-rendered checkbox popover — this page's top bar lives inside
 // AppShell's `.dam-glass-topbar` (backdrop-filter), which traps a naively
 // absolutely-positioned dropdown below the page's own outside-click overlay
-// (see CollectionTreePicker.tsx and "Conventions that bite" in STATE.md).
+// (see CollectionTreePicker.tsx).
 // Same fixed-from-trigger-rect pattern, simplified to a flat checkbox list.
 function ActionFilter({
   selected,
-  onChange,
-}: {
+  onChange }: {
   selected: AccessAction[];
   onChange: (next: AccessAction[]) => void;
 }) {
@@ -628,12 +617,9 @@ export default function ActivityPage() {
   }
 
   useEffect(() => {
-    const token = localStorage.getItem("token");
-    if (!token) {
-      router.replace("/");
-      return;
-    }
-    const payload = parseToken(token);
+    void (async () => {
+    const payload = await getSessionClaims();
+    if (!payload) { router.replace("/"); return; }
     if (!payload?.canAdmin) {
       setNotAdmin(true);
       setAuthorized(true);
@@ -652,7 +638,7 @@ export default function ActivityPage() {
       })
       .catch(() => setUsers([]));
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [router]);
+  })();}, [router]);
 
   useEffect(() => {
     if (!authorized || notAdmin) return;

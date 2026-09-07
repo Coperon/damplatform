@@ -1,5 +1,6 @@
 import { requireAuth, isSuperAdmin, actingTenantId } from '@/lib/session';
 import db from '@/lib/db';
+import { sqlAccessibleCollectionsCte } from '@/lib/permissions';
 import { AppError } from '@/lib/errors';
 
 const LIMIT = 20;
@@ -92,21 +93,7 @@ export async function GET(request: Request) {
       // the same pattern as GET /api/collections.
       const [colResult, fileResult] = await Promise.all([
         db.query(
-          `WITH RECURSIVE root_finder AS (
-             SELECT id AS original_id, id AS current_id, parent_id AS current_parent
-             FROM collections
-             UNION ALL
-             SELECT rf.original_id, c.id, c.parent_id
-             FROM root_finder rf
-             INNER JOIN collections c ON c.id = rf.current_parent
-             WHERE rf.current_parent IS NOT NULL
-           ),
-           accessible AS (
-             SELECT DISTINCT rf.original_id AS collection_id
-             FROM root_finder rf
-             INNER JOIN tenant_collection_access cca ON cca.collection_id = rf.current_id
-             WHERE cca.tenant_id = $1
-           )
+          `${sqlAccessibleCollectionsCte(1)}
            SELECT c.id, c.name, c.parent_id
            FROM collections c
            INNER JOIN accessible ac ON ac.collection_id = c.id
@@ -116,21 +103,7 @@ export async function GET(request: Request) {
           [effectiveTenant, term, LIMIT],
         ),
         db.query(
-          `WITH RECURSIVE root_finder AS (
-             SELECT id AS original_id, id AS current_id, parent_id AS current_parent
-             FROM collections
-             UNION ALL
-             SELECT rf.original_id, c.id, c.parent_id
-             FROM root_finder rf
-             INNER JOIN collections c ON c.id = rf.current_parent
-             WHERE rf.current_parent IS NOT NULL
-           ),
-           accessible AS (
-             SELECT DISTINCT rf.original_id AS collection_id
-             FROM root_finder rf
-             INNER JOIN tenant_collection_access cca ON cca.collection_id = rf.current_id
-             WHERE cca.tenant_id = $1
-           ),
+          `${sqlAccessibleCollectionsCte(1)},
            matched AS (
              SELECT DISTINCT ON (r.id)
                r.id, r.original_filename, r.mime_type, r.size_bytes, r.description,

@@ -11,8 +11,7 @@ const RANGE_DAYS: Record<string, number | null> = {
   '7d': 7,
   '30d': 30,
   '90d': 90,
-  all: null,
-};
+  all: null };
 const DEFAULT_RANGE = '30d';
 const TOP_LIMIT = 10;
 
@@ -98,8 +97,7 @@ export async function GET(req: NextRequest) {
         topDownloaded: [],
         activeUserCount: 0,
         topUsers: [],
-        timeSeries: [],
-      });
+        timeSeries: [] });
     }
     tenantScope = effectiveTenant;
   }
@@ -263,28 +261,23 @@ export async function GET(req: NextRequest) {
     scope: {
       type: tenantScope !== null ? 'tenant' : 'all',
       tenantId: tenantScope,
-      tenantName: scopeTenantNameResult?.rows[0]?.name ?? null,
-    },
+      tenantName: scopeTenantNameResult?.rows[0]?.name ?? null },
     totals: {
       views: Number(totalsRow?.views ?? 0),
-      downloads: Number(totalsRow?.downloads ?? 0),
-    },
+      downloads: Number(totalsRow?.downloads ?? 0) },
     byTenant: byTenantResult.rows.map((r) => ({
       tenantId: r.tenant_id,
       tenantName: r.tenant_name,
       views: Number(r.views),
-      downloads: Number(r.downloads),
-    })),
+      downloads: Number(r.downloads) })),
     topViewed: topViewedResult.rows.map((r) => ({
       resourceId: r.resource_id,
       filename: r.resource_id === null ? '(deleted asset)' : r.original_filename,
-      count: Number(r.count),
-    })),
+      count: Number(r.count) })),
     topDownloaded: topDownloadedResult.rows.map((r) => ({
       resourceId: r.resource_id,
       filename: r.resource_id === null ? '(deleted asset)' : r.original_filename,
-      count: Number(r.count),
-    })),
+      count: Number(r.count) })),
     activeUserCount: Number(activeUsersResult.rows[0]?.active_user_count ?? 0),
     topUsers: topUsersResult.rows.map((r) => ({
       userId: r.user_id,
@@ -292,12 +285,9 @@ export async function GET(req: NextRequest) {
       name: r.user_id === null ? '(deleted user)' : r.name,
       views: Number(r.views),
       downloads: Number(r.downloads),
-      count: Number(r.count),
-    })),
+      count: Number(r.count) })),
     timeSeries: timeSeriesResult.rows.map((r) => ({
       day: typeof r.day === 'string' ? r.day : new Date(r.day).toISOString().slice(0, 10),
       views: Number(r.views),
-      downloads: Number(r.downloads),
-    })),
-  });
+      downloads: Number(r.downloads) })) });
 }

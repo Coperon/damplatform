@@ -2,6 +2,7 @@
 
 import { useEffect, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
+import { getSessionClaims } from "@/lib/clientSession";
 import Link from "next/link";
 import { Manrope } from "next/font/google";
 import AppShell from "@/components/AppShell";
@@ -71,14 +72,6 @@ interface Tenant {
   name: string;
 }
 
-function parseToken(token: string): Record<string, unknown> | null {
-  try {
-    return JSON.parse(atob(token.split(".")[1]));
-  } catch {
-    return null;
-  }
-}
-
 function formatBytes(bytes: number): string {
   if (bytes < 1024) return `${bytes} B`;
   if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
@@ -137,12 +130,9 @@ export default function HomePage() {
   const debounceTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   useEffect(() => {
-    const token = localStorage.getItem("token");
-    if (!token) {
-      router.replace("/");
-      return;
-    }
-    const payload = parseToken(token);
+    void (async () => {
+    const payload = await getSessionClaims();
+    if (!payload) { router.replace("/"); return; }
     // Collection creation is now tenant-admin-and-above (POST /api/collections
     // is requireAdmin + tenant-scoped as of this pass) — canAdmin covers both
     // super_admin and admin (tenant admin).
@@ -156,12 +146,12 @@ export default function HomePage() {
     // requireSuperAdmin); a tenant admin's collection is auto-granted to
     // their own tenant server-side with no picker shown at all.
     if (superAdmin) {
-      fetch("/api/tenants", { headers: { Authorization: `Bearer ${token}` } })
+      fetch("/api/tenants", {  })
         .then((r) => (r.ok ? (r.json() as Promise<Tenant[]>) : []))
         .then(setTenants)
         .catch(() => {});
     }
-  }, [router]);
+  })();}, [router]);
 
   // Fetches the current page of top-level collections. Shared by the
   // pagination effect below and by handleCreate, which refetches instead of
@@ -169,8 +159,6 @@ export default function HomePage() {
   // collection into local state, but that would silently exceed pageSize and
   // leave `total` stale now that this list is server-paginated.
   async function fetchCollections() {
-    const token = localStorage.getItem("token");
-    if (!token) return;
 
     const params = new URLSearchParams();
     params.set("sort", sortFilter);
@@ -179,7 +167,7 @@ export default function HomePage() {
 
     try {
       const res = await fetch(`/api/collections?${params}`, {
-        headers: { Authorization: `Bearer ${token}` },
+        
       });
       if (!res.ok) throw new Error(`${res.status}`);
       const data = (await res.json()) as { collections: Collection[]; total: number; page: number; pageSize: number };
@@ -269,16 +257,14 @@ export default function HomePage() {
   // Fetch cover blob URLs whenever the collection list changes.
   useEffect(() => {
     if (collections.length === 0) return;
-    const token = localStorage.getItem("token");
-    if (!token) return;
 
     for (const c of collections) {
       if (!c.cover_storage_key) continue;
       (async () => {
         try {
           const res = await fetch(
-            `/api/cover?key=${encodeURIComponent(c.cover_storage_key!)}`,
-            { headers: { Authorization: `Bearer ${token}` } },
+            `/api/cover?collectionId=${encodeURIComponent(c.id)}`,
+            {  },
           );
           if (!res.ok) return;
           const { url } = await res.json();
@@ -350,8 +336,6 @@ export default function HomePage() {
     setSearchOpen(true);
 
     debounceTimerRef.current = setTimeout(async () => {
-      const token = localStorage.getItem("token");
-      if (!token) return;
 
       // Stamp this request; discard response if a newer one has been issued.
       const myCounter = ++searchCounterRef.current;
@@ -359,7 +343,7 @@ export default function HomePage() {
       try {
         const res = await fetch(
           `/api/search?q=${encodeURIComponent(val.trim())}`,
-          { headers: { Authorization: `Bearer ${token}` } },
+          {  },
         );
         if (searchCounterRef.current !== myCounter) return;
         if (!res.ok) {
@@ -392,19 +376,15 @@ export default function HomePage() {
 
   async function handleCreate(e: React.FormEvent) {
     e.preventDefault();
-    const token = localStorage.getItem("token");
-    if (!token || !newName.trim()) return;
+    if (!newName.trim()) return;
     setCreating(true);
     setCreateError(null);
     try {
       const res = await fetch("/api/collections", {
         method: "POST",
         headers: {
-          "Content-Type": "application/json",
-          Authorization: `Bearer ${token}`,
-        },
-        body: JSON.stringify({ name: newName.trim(), tenantIds: selectedTenants }),
-      });
+          "Content-Type": "application/json" },
+        body: JSON.stringify({ name: newName.trim(), tenantIds: selectedTenants }) });
       if (!res.ok) {
         const err = await res.json();
         setCreateError(err.message ?? t("home.create.error.generic"));

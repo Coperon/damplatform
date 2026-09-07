@@ -60,8 +60,7 @@ const ALLOWED_CONTENT_TYPES: Record<string, string> = {
   'image/jpeg': '.jpg',
   'image/png': '.png',
   'image/gif': '.gif',
-  'image/webp': '.webp',
-};
+  'image/webp': '.webp' };
 
 // Used for every rejection that stems from URL/IP validation. Never made
 // more specific than this — the caller must not learn which check failed or
@@ -181,11 +180,9 @@ function fetchOnce(target: ValidatedTarget): Promise<FetchResult> {
         method: 'GET',
         headers: {
           Accept: 'image/*',
-          'User-Agent': 'DAMPlatform-URLImport/1.0',
-        },
+          'User-Agent': 'DAMPlatform-URLImport/1.0' },
         lookup: pinnedLookup(pinnedAddress, pinnedFamily),
-        timeout: FETCH_TIMEOUT_MS,
-      },
+        timeout: FETCH_TIMEOUT_MS },
       (res) => {
         const status = res.statusCode ?? 0;
 
@@ -409,8 +406,7 @@ export async function POST(request: Request) {
         tenantId: admin.tenantId ?? null,
         resourceId: resource.id,
         action: 'upload',
-        metadata: { filename: resource.original_filename, collectionId },
-      });
+        metadata: { filename: resource.original_filename, collectionId } });
       await extractMetadataInline(resource.id, buffer, contentType, admin.tenantId ?? null);
       return Response.json(resource, { status: 201 });
     }
@@ -442,8 +438,7 @@ export async function POST(request: Request) {
       tenantId: admin.tenantId ?? null,
       resourceId: resource.id,
       action: 'upload',
-      metadata: { filename: resource.original_filename, collectionId: null },
-    });
+      metadata: { filename: resource.original_filename, collectionId: null } });
     await extractMetadataInline(resource.id, buffer, contentType, admin.tenantId ?? null);
     return Response.json(resource, { status: 201 });
   } catch (err) {

@@ -3,6 +3,7 @@
 import { useEffect, useRef, useState } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
+import { getSessionClaims } from "@/lib/clientSession";
 import AppShell from "@/components/AppShell";
 import Select from "@/components/Select";
 import PhoneInput from "@/components/PhoneInput";
@@ -34,22 +35,13 @@ interface Invitation {
   status: "pending" | "expired";
 }
 
-function parseToken(token: string): Record<string, unknown> | null {
-  try {
-    return JSON.parse(atob(token.split(".")[1]));
-  } catch {
-    return null;
-  }
-}
-
 function formatDateTime(iso: string): string {
   return new Date(iso).toLocaleString(undefined, {
     year: "numeric",
     month: "short",
     day: "numeric",
     hour: "numeric",
-    minute: "2-digit",
-  });
+    minute: "2-digit" });
 }
 
 
@@ -111,9 +103,7 @@ export default function AdminTenantsPage() {
   const [deleteError, setDeleteError] = useState<string | null>(null);
 
   function loadData() {
-    const token = localStorage.getItem("token");
-    if (!token) return;
-    const headers = { Authorization: `Bearer ${token}` };
+    const headers = { };
     setLoading(true);
     setLoadError(null);
     Promise.all([
@@ -138,12 +128,9 @@ export default function AdminTenantsPage() {
   }
 
   useEffect(() => {
-    const token = localStorage.getItem("token");
-    if (!token) {
-      router.replace("/");
-      return;
-    }
-    const payload = parseToken(token);
+    void (async () => {
+    const payload = await getSessionClaims();
+    if (!payload) { router.replace("/"); return; }
     // Tenant management is structure/cross-tenant (any super admin can see
     // and create any tenant) — same tier classification as Media/Metadata/
     // Shares (Stage 6), not the tenant-scoped Users page.
@@ -155,12 +142,10 @@ export default function AdminTenantsPage() {
     setAuthorized(true);
     loadData();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [router]);
+  })();}, [router]);
 
   async function handleCreateTenant(e: React.FormEvent) {
     e.preventDefault();
-    const token = localStorage.getItem("token");
-    if (!token) return;
     const name = newTenantName.trim();
     const address = newTenantAddress.trim();
     // newTenantPhone is already the composed "+<dial> <number>" string
@@ -175,9 +160,8 @@ export default function AdminTenantsPage() {
     try {
       const res = await fetch("/api/tenants", {
         method: "POST",
-        headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
-        body: JSON.stringify({ name, address, phone: newTenantPhone }),
-      });
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ name, address, phone: newTenantPhone }) });
       const body = await res.json().catch(() => ({}));
       if (!res.ok) {
         setCreateTenantError((body as { error?: string }).error ?? t("common.error.generic", { status: res.status }));
@@ -211,8 +195,6 @@ export default function AdminTenantsPage() {
 
   async function handleInvite(e: React.FormEvent) {
     e.preventDefault();
-    const token = localStorage.getItem("token");
-    if (!token) return;
 
     const email = inviteEmail.trim();
     if (!email) {
@@ -230,9 +212,8 @@ export default function AdminTenantsPage() {
     try {
       const res = await fetch("/api/invitations", {
         method: "POST",
-        headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
-        body: JSON.stringify({ email, roleId: inviteRoleId, tenantId: inviteTenantId }),
-      });
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ email, roleId: inviteRoleId, tenantId: inviteTenantId }) });
       const body = await res.json().catch(() => ({}));
       if (!res.ok) {
         setInviteError((body as { error?: string }).error ?? t("common.error.generic", { status: res.status }));
@@ -250,15 +231,11 @@ export default function AdminTenantsPage() {
   }
 
   async function handleRevoke(invitation: Invitation) {
-    const token = localStorage.getItem("token");
-    if (!token) return;
     setRevokingIds((prev) => new Set(prev).add(invitation.id));
     setRevokeErrors((prev) => { const n = { ...prev }; delete n[invitation.id]; return n; });
     try {
       const res = await fetch(`/api/invitations/${invitation.id}`, {
-        method: "DELETE",
-        headers: { Authorization: `Bearer ${token}` },
-      });
+        method: "DELETE" });
       if (!res.ok) {
         const body = await res.json().catch(() => ({}));
         setRevokeErrors((prev) => ({ ...prev, [invitation.id]: (body as { error?: string }).error ?? t("common.error.generic", { status: res.status }) }));
@@ -279,9 +256,7 @@ export default function AdminTenantsPage() {
     setConfirmNameInput("");
     setDeleteError(null);
     setPreviewLoading(true);
-    const token = localStorage.getItem("token");
-    if (!token) return;
-    fetch(`/api/tenants/${tenant.id}`, { headers: { Authorization: `Bearer ${token}` } })
+    fetch(`/api/tenants/${tenant.id}`, {  })
       .then(async (r) => {
         const body = await r.json().catch(() => ({}));
         if (!r.ok) throw new Error((body as { error?: string }).error ?? t("common.error.generic", { status: r.status }));
@@ -303,16 +278,13 @@ export default function AdminTenantsPage() {
 
   async function handleConfirmDelete() {
     if (!deleteTarget) return;
-    const token = localStorage.getItem("token");
-    if (!token) return;
     setDeleting(true);
     setDeleteError(null);
     try {
       const res = await fetch(`/api/tenants/${deleteTarget.id}`, {
         method: "DELETE",
-        headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
-        body: JSON.stringify({ confirmName: confirmNameInput }),
-      });
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ confirmName: confirmNameInput }) });
       const body = await res.json().catch(() => ({}));
       if (!res.ok) {
         setDeleteError((body as { error?: string }).error ?? t("common.error.generic", { status: res.status }));

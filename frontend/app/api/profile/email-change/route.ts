@@ -30,8 +30,7 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({
       message: `A confirmation link was sent to ${result.newEmail}.`,
       newEmail: result.newEmail,
-      expiresAt: result.expiresAt,
-    });
+      expiresAt: result.expiresAt });
   } catch (err) {
     if (err instanceof AppError) {
       return NextResponse.json({ error: err.message }, { status: err.status });

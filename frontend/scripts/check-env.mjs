@@ -163,10 +163,19 @@ async function checkStorage() {
   console.log(`  target: ${S3_ENDPOINT} bucket "${S3_BUCKET}" region "${S3_REGION ?? '(default us-east-1)'}"`);
 
   const isR2 = /\.r2\.cloudflarestorage\.com/i.test(S3_ENDPOINT);
+  const isSupabaseS3 = /\.storage\.supabase\.co\/storage\/v1\/s3/i.test(S3_ENDPOINT);
   if (isR2) {
     if (S3_REGION === 'auto') ok('S3_REGION=auto — correct for R2.');
     else bad(`R2 endpoint but S3_REGION is "${S3_REGION ?? 'unset'}". R2 requires "auto".`);
     if (!S3_ENDPOINT.startsWith('https://')) bad('R2 endpoint must be https://');
+  }
+  if (isSupabaseS3) {
+    if (!S3_REGION || S3_REGION === 'auto') {
+      bad('Supabase S3 needs the project region (e.g. eu-west-1), not "auto".');
+    } else {
+      ok(`Supabase S3 endpoint; region "${S3_REGION}".`);
+    }
+    if (!S3_ENDPOINT.startsWith('https://')) bad('Supabase S3 endpoint must be https://');
   }
 
   const client = new S3Client({

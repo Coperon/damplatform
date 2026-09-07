@@ -113,8 +113,7 @@ export async function GET(req: NextRequest, ctx: { params: Promise<{ id: string 
     userCount: userCountResult.rows[0].n,
     collectionsToDelete: exclusiveIds.length,
     collectionsSkippedShared: sharedIds.length,
-    resourcesToDelete: exclusiveResources.length,
-  });
+    resourcesToDelete: exclusiveResources.length });
 }
 
 // Permanent tenant deletion. Super-admin-only (not requireAdmin — a tenant
@@ -318,15 +317,12 @@ export async function DELETE(req: NextRequest, ctx: { params: Promise<{ id: stri
       resourcesDeleted: exclusiveResources.length,
       invitationsDeleted,
       metadataFieldsDeleted,
-      permissionOverridesDeleted,
-    },
-  });
+      permissionOverridesDeleted } });
 
   return NextResponse.json({
     ok: true,
     usersDeleted,
     collectionsDeleted: exclusiveIds.length,
     collectionsSkippedShared: sharedIds.length,
-    resourcesDeleted: exclusiveResources.length,
-  });
+    resourcesDeleted: exclusiveResources.length });
 }

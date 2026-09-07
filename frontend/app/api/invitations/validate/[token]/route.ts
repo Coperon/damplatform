@@ -41,6 +41,5 @@ export async function GET(req: NextRequest, ctx: { params: Promise<{ token: stri
     status: 'valid',
     email: invitation.email,
     tenantName: tenant.name,
-    roleName,
-  });
+    roleName });
 }

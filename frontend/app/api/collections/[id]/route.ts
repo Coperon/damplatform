@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import db from '@/lib/db';
 import { requireAdmin, requireAuth, canAccessAllTenants } from '@/lib/session';
-import { tenantHasCollectionAccess, hasPermission } from '@/lib/permissions';
+import { tenantHasCollectionAccess, hasPermission, denyUnlessCollectionAccess } from '@/lib/permissions';
 
 export async function GET(req: NextRequest, ctx: { params: Promise<{ id: string }> }) {
   const user = requireAuth(req);
@@ -19,29 +19,8 @@ export async function GET(req: NextRequest, ctx: { params: Promise<{ id: string 
   // (Stage 88: was root-only), not just the root. Bypass: cross-tenant users
   // (super admins, and role-2 admins with can_access_all_tenants — the "third branch");
   // everyone else falls through to the same tenant-scoped check as always.
-  if (!canAccessAllTenants(user)) {
-    if (!user.tenantId) {
-      return NextResponse.json({ error: 'Access denied' }, { status: 403 });
-    }
-    const accessCheck = await db.query(
-      `WITH RECURSIVE root_finder AS (
-         SELECT id, parent_id FROM collections WHERE id = $1
-         UNION ALL
-         SELECT c.id, c.parent_id
-         FROM collections c
-         INNER JOIN root_finder rf ON rf.parent_id = c.id
-         WHERE rf.parent_id IS NOT NULL
-       )
-       SELECT 1 FROM root_finder rf
-       INNER JOIN tenant_collection_access cca ON cca.collection_id = rf.id
-       WHERE cca.tenant_id = $2
-       LIMIT 1`,
-      [id, user.tenantId],
-    );
-    if (accessCheck.rowCount === 0) {
-      return NextResponse.json({ error: 'Access denied' }, { status: 403 });
-    }
-  }
+  const denied = await denyUnlessCollectionAccess(user, id);
+  if (denied) return denied;
 
   return NextResponse.json(collection);
 }

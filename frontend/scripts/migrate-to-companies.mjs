@@ -1,6 +1,6 @@
 // OBSOLETE — its job is done and it can no longer run. This was the Stage 1
 // multi-tenancy backfill, a one-time tool that read group_id/group_collection_access
-// (the legacy group system, retired in Stage 94 — see docs/STATE.md) as its
+// (the legacy group system, retired in Stage 94) as its
 // migration source. Both are now dropped from the schema, so any run past
 // this point fails immediately on the first query. Left in place as a
 // historical record of how the companies/roles backfill was derived, not as

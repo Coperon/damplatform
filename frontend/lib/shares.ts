@@ -1,5 +1,6 @@
 import bcrypt from 'bcryptjs';
 import db from './db';
+import { tenantIdsForResource, tenantIdsForCollection } from './permissions';
 import { logAccess } from './accessLog';
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
@@ -82,40 +83,12 @@ export async function touchShareLastUsed(shareId: string): Promise<void> {
 // activity to a tenant that doesn't actually own it).
 export async function resolveShareOwningTenant(share: ShareRow): Promise<string | null> {
   if (share.resourceId) {
-    const result = await db.query<{ tenant_id: string }>(
-      `WITH RECURSIVE root_finder AS (
-         SELECT c.id, c.parent_id
-         FROM collections c
-         INNER JOIN collection_resource cr ON cr.collection_id = c.id
-         WHERE cr.resource_id = $1
-         UNION ALL
-         SELECT c.id, c.parent_id
-         FROM collections c
-         INNER JOIN root_finder rf ON rf.parent_id = c.id
-         WHERE rf.parent_id IS NOT NULL
-       )
-       SELECT DISTINCT cca.tenant_id
-       FROM root_finder rf
-       INNER JOIN tenant_collection_access cca ON cca.collection_id = rf.id`,
-      [share.resourceId],
-    );
-    return result.rows.length === 1 ? result.rows[0].tenant_id : null;
+    const ids = await tenantIdsForResource(share.resourceId);
+    return ids.length === 1 ? ids[0] : null;
   }
   if (share.collectionId) {
-    const result = await db.query<{ tenant_id: string }>(
-      `WITH RECURSIVE ancestors AS (
-         SELECT id, parent_id FROM collections WHERE id = $1
-         UNION ALL
-         SELECT c.id, c.parent_id
-         FROM collections c
-         INNER JOIN ancestors a ON a.parent_id = c.id
-       )
-       SELECT DISTINCT cca.tenant_id
-       FROM ancestors a
-       INNER JOIN tenant_collection_access cca ON cca.collection_id = a.id`,
-      [share.collectionId],
-    );
-    return result.rows.length === 1 ? result.rows[0].tenant_id : null;
+    const ids = await tenantIdsForCollection(share.collectionId);
+    return ids.length === 1 ? ids[0] : null;
   }
   return null;
 }

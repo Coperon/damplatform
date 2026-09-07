@@ -8,8 +8,7 @@ import { logAccess } from '@/lib/accessLog';
 import {
   tenantHasCollectionAccess,
   tenantHasResourceAccess,
-  requirePermission,
-} from '@/lib/permissions';
+  requirePermission } from '@/lib/permissions';
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
@@ -177,9 +176,7 @@ export async function POST(req: NextRequest) {
       targetType: target.type,
       targetId: target.id,
       accessLevel,
-      expiresAt: expiresAt ? expiresAt.toISOString() : null,
-    },
-  });
+      expiresAt: expiresAt ? expiresAt.toISOString() : null } });
 
   return NextResponse.json(
     {
@@ -187,8 +184,7 @@ export async function POST(req: NextRequest) {
       url,
       accessLevel: share.access_level,
       expiresAt: share.expires_at,
-      target,
-    },
+      target },
     { status: 201 },
   );
 }
@@ -259,8 +255,7 @@ export async function GET(req: NextRequest) {
     lastUsedAt: row.last_used_at,
     revoked: row.revoked,
     label: row.label,
-    hasLink: row.has_link,
-  }));
+    hasLink: row.has_link }));
 
   return NextResponse.json({ shares });
 }

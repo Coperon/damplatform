@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import db from '@/lib/db';
-import { requireAuth, canAccessAllTenants } from '@/lib/session';
+import { requireAuth } from '@/lib/session';
+import { denyUnlessResourceAccess } from '@/lib/permissions';
 import { logAccess } from '@/lib/accessLog';
 
 // Dedicated endpoint for the "view" signal widened to lightbox opens — the
@@ -26,32 +27,8 @@ export async function POST(req: NextRequest, ctx: { params: Promise<{ id: string
   // Identical cascade access check to GET /api/resources/[id]/metadata and
   // GET /api/download/[id] — a lightbox open is only ever logged for a
   // resource this user's tenant can actually reach.
-  if (!canAccessAllTenants(user)) {
-    if (!user.tenantId) {
-      return NextResponse.json({ error: 'Access denied' }, { status: 403 });
-    }
-    const accessCheck = await db.query(
-      `WITH RECURSIVE root_finder AS (
-         SELECT c.id, c.parent_id
-         FROM collections c
-         INNER JOIN collection_resource cr ON cr.collection_id = c.id
-         WHERE cr.resource_id = $1
-         UNION ALL
-         SELECT c.id, c.parent_id
-         FROM collections c
-         INNER JOIN root_finder rf ON rf.parent_id = c.id
-         WHERE rf.parent_id IS NOT NULL
-       )
-       SELECT 1 FROM root_finder rf
-       INNER JOIN tenant_collection_access cca ON cca.collection_id = rf.id
-       WHERE cca.tenant_id = $2
-       LIMIT 1`,
-      [id, user.tenantId],
-    );
-    if (accessCheck.rowCount === 0) {
-      return NextResponse.json({ error: 'Access denied' }, { status: 403 });
-    }
-  }
+  const denied = await denyUnlessResourceAccess(user, id);
+  if (denied) return denied;
 
   // Fire-and-forget, only reached past the access check above — a denied
   // lightbox open is never logged as activity.
@@ -60,8 +37,7 @@ export async function POST(req: NextRequest, ctx: { params: Promise<{ id: string
     tenantId: user.tenantId ?? null,
     resourceId: id,
     action: 'view',
-    metadata: { source: 'lightbox' },
-  });
+    metadata: { source: 'lightbox' } });
 
   return NextResponse.json({ ok: true });
 }

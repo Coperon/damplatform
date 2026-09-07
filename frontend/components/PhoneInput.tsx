@@ -44,8 +44,7 @@ export default function PhoneInput({
   required,
   disabled,
   defaultCountryCode = DEFAULT_COUNTRY_CODE,
-  onChange,
-}: PhoneInputProps) {
+  onChange }: PhoneInputProps) {
   const { t } = useTranslation();
   const [countryCode, setCountryCode] = useState(defaultCountryCode);
   const [numberRaw, setNumberRaw] = useState("");
@@ -56,8 +55,7 @@ export default function PhoneInput({
     onChange(compose(country.dial, numberRaw), {
       countryCode,
       dial: country.dial,
-      number: numberRaw.replace(/[^\d]/g, ""),
-    });
+      number: numberRaw.replace(/[^\d]/g, "") });
     // Deliberately keyed on the two pieces of state only — onChange is a
     // fresh closure every parent render, and depending on it would refire
     // this on every keystroke of unrelated fields, not just this one's.

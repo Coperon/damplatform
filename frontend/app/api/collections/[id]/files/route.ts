@@ -1,4 +1,5 @@
 import { requireAuth, canAccessAllTenants } from '@/lib/session';
+import { tenantHasCollectionAccess } from '@/lib/permissions';
 import { AppError } from '@/lib/errors';
 import db from '@/lib/db';
 
@@ -62,27 +63,10 @@ export async function GET(request: Request, ctx: { params: Promise<{ id: string 
     // through parent_id and check whether any ancestor (inclusive) is granted to
     // the user's tenant. Return [] on no access — do not leak files.
     // Fail closed: no tenant (old token, or a data anomaly) skips the query entirely.
-    if (!user.tenantId) {
+    if (!canAccessAllTenants(user)) {
+    if (!user.tenantId || !(await tenantHasCollectionAccess(user.tenantId, id))) {
       return Response.json({ files: [], total: 0, page: 1, pageSize });
     }
-    const accessCheck = await db.query(
-      `WITH RECURSIVE root_finder AS (
-         SELECT id, parent_id FROM collections WHERE id = $1
-         UNION ALL
-         SELECT c.id, c.parent_id
-         FROM collections c
-         INNER JOIN root_finder rf ON rf.parent_id = c.id
-         WHERE rf.parent_id IS NOT NULL
-       )
-       SELECT 1 FROM root_finder rf
-       INNER JOIN tenant_collection_access cca ON cca.collection_id = rf.id
-       WHERE cca.tenant_id = $2
-       LIMIT 1`,
-      [id, user.tenantId],
-    );
-
-    if (accessCheck.rowCount === 0) {
-      return Response.json({ files: [], total: 0, page: 1, pageSize });
     }
 
     // total — identical FROM/JOIN/WHERE as the page query below, just counted

@@ -13,7 +13,6 @@ lives in the database.
 | `damInfra/` | Docker Compose for Postgres, Redis, and MinIO. |
 | `db/migrations/` | Schema migrations, applied in filename order. Append-only. |
 | `db/seeds/` | Reference data (roles) needed for a working install. |
-| `docs/` | `STATE.md` is the current state of the project. |
 
 There is no separate backend process — the API routes in `frontend/app/api/`
 are the backend.

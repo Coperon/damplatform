@@ -163,8 +163,7 @@ export async function POST(req: NextRequest) {
       email: invitation.email,
       role: { id: roleId, name: role.name },
       tenant: { id: tenant.id, name: tenant.name },
-      expiresAt: invitation.expires_at,
-    },
+      expiresAt: invitation.expires_at },
     { status: 201 },
   );
 }
@@ -209,8 +208,7 @@ export async function GET(req: NextRequest) {
     invitedBy: row.invited_by ? { id: row.invited_by, email: row.invited_by_email, name: row.invited_by_name } : null,
     expiresAt: row.expires_at,
     createdAt: row.created_at,
-    status: new Date(row.expires_at).getTime() > now ? 'pending' as const : 'expired' as const,
-  }));
+    status: new Date(row.expires_at).getTime() > now ? 'pending' as const : 'expired' as const }));
 
   return NextResponse.json({ invitations });
 }

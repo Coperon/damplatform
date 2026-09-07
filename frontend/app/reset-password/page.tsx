@@ -9,8 +9,7 @@ import AuthShell, {
   authButtonClass,
   authMessageClass,
   authLinkClass,
-  authBackLinkClass,
-} from "@/components/AuthShell";
+  authBackLinkClass } from "@/components/AuthShell";
 
 function ResetPasswordForm() {
   const searchParams = useSearchParams();
@@ -52,8 +51,7 @@ function ResetPasswordForm() {
       const res = await fetch("/api/auth/reset-password", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ token, newPassword }),
-      });
+        body: JSON.stringify({ token, newPassword }) });
 
       if (!res.ok) {
         const data = await res.json().catch(() => null);

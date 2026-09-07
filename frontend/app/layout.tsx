@@ -5,22 +5,18 @@ import { TranslationProvider } from "@/lib/i18n";
 
 const geistSans = Geist({
   variable: "--font-geist-sans",
-  subsets: ["latin"],
-});
+  subsets: ["latin"] });
 
 const geistMono = Geist_Mono({
   variable: "--font-geist-mono",
-  subsets: ["latin"],
-});
+  subsets: ["latin"] });
 
 export const metadata: Metadata = {
   title: "iPartner Media Manager: Coperon's DAM Solution",
-  description: "Coperon's digital asset management platform for uploading, organizing, and sharing media with clients.",
-};
+  description: "Coperon's digital asset management platform for uploading, organizing, and sharing media with clients." };
 
 export default function RootLayout({
-  children,
-}: Readonly<{
+  children }: Readonly<{
   children: React.ReactNode;
 }>) {
   return (
@@ -44,8 +40,7 @@ export default function RootLayout({
             and the account-menu language selector write. */}
         <script
           dangerouslySetInnerHTML={{
-            __html: `(function(){try{var t=localStorage.getItem("dam:theme");if(t==="dark"){document.documentElement.dataset.theme="dark";}}catch(e){}try{var l=localStorage.getItem("dam:locale")||"en";document.documentElement.lang=l;document.documentElement.dataset.locale=l;}catch(e){document.documentElement.lang="en";document.documentElement.dataset.locale="en";}})();`,
-          }}
+            __html: `(function(){try{var t=localStorage.getItem("dam:theme");if(t==="dark"){document.documentElement.dataset.theme="dark";}}catch(e){}try{var l=localStorage.getItem("dam:locale")||"en";document.documentElement.lang=l;document.documentElement.dataset.locale=l;}catch(e){document.documentElement.lang="en";document.documentElement.dataset.locale="en";}})();` }}
         />
       </head>
       <body className="min-h-full flex flex-col">

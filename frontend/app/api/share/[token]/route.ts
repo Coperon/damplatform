@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import db from '@/lib/db';
 import { validateShareToken, touchShareLastUsed, logShareAccess } from '@/lib/shares';
+import { rateLimitOr429 } from '@/lib/rateLimit';
 
 interface FileSummary {
   id: string;
@@ -11,6 +12,9 @@ interface FileSummary {
 }
 
 export async function GET(req: NextRequest, ctx: { params: Promise<{ token: string }> }) {
+  const limited = await rateLimitOr429(req, 'share-token', 60, 60);
+  if (limited) return limited;
+
   const { token } = await ctx.params;
   const validation = await validateShareToken(token);
 
@@ -69,8 +73,7 @@ export async function GET(req: NextRequest, ctx: { params: Promise<{ token: stri
       original_filename: r.original_filename,
       mime_type: r.mime_type,
       size_bytes: Number(r.size_bytes),
-      hasThumbnail: Boolean(r.thumbnail_storage_key),
-    }));
+      hasThumbnail: Boolean(r.thumbnail_storage_key) }));
   } else {
     const result = await db.query(
       'SELECT id, original_filename, mime_type, size_bytes, thumbnail_storage_key FROM resources WHERE id = $1',
@@ -86,8 +89,7 @@ export async function GET(req: NextRequest, ctx: { params: Promise<{ token: stri
       original_filename: r.original_filename,
       mime_type: r.mime_type,
       size_bytes: Number(r.size_bytes),
-      hasThumbnail: Boolean(r.thumbnail_storage_key),
-    }];
+      hasThumbnail: Boolean(r.thumbnail_storage_key) }];
   }
 
   return NextResponse.json({
@@ -95,6 +97,5 @@ export async function GET(req: NextRequest, ctx: { params: Promise<{ token: stri
     accessLevel: share.accessLevel,
     expiresAt: share.expiresAt,
     target,
-    files,
-  });
+    files });
 }

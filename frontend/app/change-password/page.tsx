@@ -8,8 +8,7 @@ import AuthShell, {
   authButtonClass,
   authMessageClass,
   authLinkClass,
-  authBackLinkClass,
-} from "@/components/AuthShell";
+  authBackLinkClass } from "@/components/AuthShell";
 
 export default function ChangePasswordPage() {
   const [currentPassword, setCurrentPassword] = useState("");
@@ -38,23 +37,13 @@ const strong =
       );
       return;
     }
-
-    const token = localStorage.getItem("token");
-    if (!token) {
-      setMessage("You must be logged in to change your password.");
-      return;
-    }
-
     setMessage("Updating password...");
     try {
       const res = await fetch("/api/auth/change-password", {
         method: "POST",
         headers: {
-          "Content-Type": "application/json",
-          Authorization: `Bearer ${token}`,
-        },
-        body: JSON.stringify({ currentPassword, newPassword }),
-      });
+          "Content-Type": "application/json" },
+        body: JSON.stringify({ currentPassword, newPassword }) });
 
       if (!res.ok) {
         const data = await res.json().catch(() => null);
